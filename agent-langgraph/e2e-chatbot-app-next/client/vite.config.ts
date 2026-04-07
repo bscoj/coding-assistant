@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import type { ProxyOptions } from "vite";
@@ -19,39 +19,41 @@ export function simulateNetworkError(
   };
 }
 
-const backendPort =
-  process.env.CHAT_APP_SERVER_PORT || process.env.CHAT_APP_PORT || "3001";
-const proxyTarget = process.env.BACKEND_URL || `http://localhost:${backendPort}`;
-
 // https://vitejs.dev/config/
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
-  },
-  server: {
-    port: process.env.CHAT_APP_CLIENT_PORT
-      ? Number.parseInt(process.env.CHAT_APP_CLIENT_PORT)
-      : process.env.PORT
-        ? Number.parseInt(process.env.PORT)
-        : 3002,
-    proxy: {
-      "/api/chat": {
-        target: proxyTarget,
-        changeOrigin: true,
-        // Uncomment this to test situations where the stream will time out.
-        // configure: simulateNetworkError(2000),
-      },
-      "/api": {
-        target: proxyTarget,
-        changeOrigin: true,
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, path.resolve(__dirname, ".."), "");
+  const backendPort =
+    env.CHAT_APP_SERVER_PORT || env.CHAT_APP_PORT || process.env.CHAT_APP_SERVER_PORT || process.env.CHAT_APP_PORT || "3001";
+  const clientPort =
+    env.CHAT_APP_CLIENT_PORT || process.env.CHAT_APP_CLIENT_PORT || process.env.PORT || "3002";
+  const proxyTarget =
+    env.BACKEND_URL || process.env.BACKEND_URL || `http://localhost:${backendPort}`;
+
+  return {
+    plugins: [react()],
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
       },
     },
-  },
-  build: {
-    outDir: "dist",
-    sourcemap: false,
-  },
+    server: {
+      port: Number.parseInt(clientPort, 10),
+      proxy: {
+        "/api/chat": {
+          target: proxyTarget,
+          changeOrigin: true,
+          // Uncomment this to test situations where the stream will time out.
+          // configure: simulateNetworkError(2000),
+        },
+        "/api": {
+          target: proxyTarget,
+          changeOrigin: true,
+        },
+      },
+    },
+    build: {
+      outDir: "dist",
+      sourcemap: false,
+    },
+  };
 });
