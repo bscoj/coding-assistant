@@ -12,6 +12,7 @@ import {
   setLocalRepoConfig,
 } from '../lib/local-repo-store';
 import { getLocalAgentModelConfig } from '../lib/local-agent-config';
+import { pickFolder } from '../lib/folder-picker';
 import {
   getSharedProfile,
   saveSharedProfile,
@@ -93,6 +94,24 @@ configRouter.put('/repo', async (req: Request, res: Response) => {
 
   try {
     const repo = setLocalRepoConfig(repoPath);
+    res.json({ repo });
+  } catch (error) {
+    res.status(400).json({
+      code: 'bad_request:api',
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+configRouter.post('/repo/browse', async (_req: Request, res: Response) => {
+  try {
+    const selectedPath = await pickFolder();
+    if (!selectedPath) {
+      res.status(204).end();
+      return;
+    }
+
+    const repo = setLocalRepoConfig(selectedPath);
     res.json({ repo });
   } catch (error) {
     res.status(400).json({

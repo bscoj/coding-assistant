@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAppConfig } from '@/contexts/AppConfigContext';
+import { fetchWithErrorHandlers } from '@/lib/utils';
 
 export function RepoPicker({
   open,
@@ -24,6 +25,7 @@ export function RepoPicker({
   const [path, setPath] = useState(repo?.path ?? '');
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isBrowsing, setIsBrowsing] = useState(false);
 
   const helperText = useMemo(() => {
     if (!repo?.path) return 'Choose the local repository the agent can inspect and edit.';
@@ -43,6 +45,29 @@ export function RepoPicker({
     }
   }
 
+  async function handleBrowse() {
+    setError(null);
+    setIsBrowsing(true);
+    try {
+      const response = await fetchWithErrorHandlers('/api/config/repo/browse', {
+        method: 'POST',
+      });
+      if (response.status === 204) {
+        return;
+      }
+
+      const payload = (await response.json()) as {
+        repo: { path: string | null };
+      };
+      setPath(payload.repo.path ?? '');
+      onOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsBrowsing(false);
+    }
+  }
+
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent className="border-white/[0.08] bg-[#0f141b] text-white shadow-[0_32px_90px_rgba(0,0,0,0.45)]">
@@ -54,12 +79,26 @@ export function RepoPicker({
         </AlertDialogHeader>
 
         <div className="space-y-3">
-          <Input
-            value={path}
-            onChange={(event) => setPath(event.target.value)}
-            placeholder="/Users/you/path/to/repo"
-            className="border-white/[0.08] bg-white/[0.04] text-white placeholder:text-white/30"
-          />
+          <div className="flex gap-2">
+            <Input
+              value={path}
+              onChange={(event) => setPath(event.target.value)}
+              placeholder="/Users/you/path/to/repo"
+              className="border-white/[0.08] bg-white/[0.04] text-white placeholder:text-white/30"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void handleBrowse()}
+              disabled={isBrowsing || isSaving}
+              className="shrink-0 border-white/[0.08] bg-white/[0.04] text-white hover:bg-white/[0.08] hover:text-white"
+            >
+              {isBrowsing ? 'Opening...' : 'Browse...'}
+            </Button>
+          </div>
+          <div className="text-xs text-white/45">
+            Browse opens your system folder picker. Manual path entry is still available if needed.
+          </div>
           {repo?.path && (
             <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-white/60">
               Active repo: {repo.path}
