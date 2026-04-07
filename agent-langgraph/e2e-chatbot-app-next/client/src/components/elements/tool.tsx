@@ -86,7 +86,10 @@ export const ToolContainer = ({ className, ...props }: ToolContainerProps) => {
   return (
     <ToolContext.Provider value={{ open }}>
       <Collapsible
-        className={cn('not-prose w-full rounded-xl border', className)}
+        className={cn(
+          'not-prose w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.025] shadow-[0_10px_30px_rgba(0,0,0,0.12)]',
+          className,
+        )}
         open={open}
         onOpenChange={setOpen}
         {...props}
@@ -113,11 +116,11 @@ type ToolInputProps = ComponentProps<'div'> & {
 };
 
 export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
-  <div className={cn('space-y-2 overflow-hidden p-3', className)} {...props}>
-    <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+  <div className={cn('space-y-2 overflow-hidden px-3 pb-3', className)} {...props}>
+    <h4 className="font-medium text-[11px] uppercase tracking-[0.18em] text-white/38">
       Parameters
     </h4>
-    <div className="rounded-md bg-muted/50">
+    <div className="rounded-xl border border-white/[0.06] bg-[#0b1016]">
       <CodeBlock code={JSON.stringify(input, null, 2)} language="json" />
     </div>
   </div>
@@ -140,16 +143,16 @@ export const ToolOutput = ({
   }
 
   return (
-    <div className={cn('space-y-2 p-3', className)} {...props}>
-      <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+    <div className={cn('space-y-2 border-t border-white/[0.06] px-3 py-3', className)} {...props}>
+      <h4 className="font-medium text-[11px] uppercase tracking-[0.18em] text-white/38">
         {errorText ? 'Error' : 'Result'}
       </h4>
       <div
         className={cn(
-          'overflow-x-auto rounded-md text-xs [&_table]:w-full',
+          'overflow-x-auto rounded-xl border border-white/[0.06] text-xs [&_table]:w-full',
           errorText
-            ? 'bg-destructive/10 text-destructive'
-            : 'bg-muted/50 text-foreground',
+            ? 'bg-red-500/10 text-red-200'
+            : 'bg-[#0b1016] text-white/88',
         )}
       >
         {errorText && <div className="p-2">{errorText}</div>}
@@ -176,20 +179,24 @@ export const ToolHeader = ({
 }: ToolHeaderProps) => {
   const { open } = useContext(ToolContext);
   return (
-    <CollapsibleTrigger
-      className={cn(
-        'flex w-full min-w-0 items-center justify-between gap-2 p-3 cursor-pointer',
+      <CollapsibleTrigger
+        className={cn(
+        'flex w-full min-w-0 items-center justify-between gap-2 px-3 py-2.5 cursor-pointer bg-white/[0.02] hover:bg-white/[0.04] transition-colors',
         className,
       )}
       {...props}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <WrenchIcon className="size-4 shrink-0 text-muted-foreground" />
-        <span className="truncate font-medium text-sm">{type}</span>
+        <WrenchIcon className="size-4 shrink-0 text-white/45" />
+        <span className="truncate font-medium text-[13px] text-white/88">{type}</span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <ToolStatusBadge state={state} />
-        {open ? <ChevronUpIcon /> : <ChevronDownIcon />}
+        <ToolStatusBadge state={state} className="bg-white/[0.06] text-white/72" />
+        {open ? (
+          <ChevronUpIcon className="size-4 text-white/38" />
+        ) : (
+          <ChevronDownIcon className="size-4 text-white/38" />
+        )}
         {/* <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" /> */}
       </div>
     </CollapsibleTrigger>

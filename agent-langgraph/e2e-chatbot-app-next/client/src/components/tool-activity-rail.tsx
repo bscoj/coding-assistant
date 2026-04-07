@@ -53,12 +53,10 @@ export function ToolActivityRail({ messages }: { messages: ChatMessage[] }) {
   const activities = extractActivities(messages);
 
   return (
-    <aside className="hidden w-80 shrink-0 border-l border-white/[0.08] bg-[#0b1016]/78 backdrop-blur-xl xl:flex xl:flex-col">
+    <aside className="hidden w-72 shrink-0 border-l border-white/[0.06] bg-[#0a0f15]/70 backdrop-blur-xl xl:flex xl:flex-col">
       <div className="border-b border-white/[0.06] px-4 py-3">
-        <h3 className="font-medium text-sm">Activity</h3>
-        <p className="text-xs text-white/42">
-          Recent tool calls, approvals, and file review steps.
-        </p>
+        <h3 className="font-medium text-sm text-white/86">Activity</h3>
+        <p className="text-[11px] text-white/34">Recent tool state, compact by default.</p>
       </div>
       <div className="flex-1 overflow-auto p-3">
         {activities.length === 0 ? (
@@ -67,14 +65,14 @@ export function ToolActivityRail({ messages }: { messages: ChatMessage[] }) {
             proposes edits, and requests permission.
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {activities.map((activity) => (
               <div
                 key={activity.id}
-                className="space-y-2 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3"
+                className="space-y-1.5 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2.5"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate font-medium text-sm">
+                  <span className="truncate font-medium text-[13px] text-white/84">
                     {activity.toolName}
                   </span>
                   <span
@@ -87,12 +85,12 @@ export function ToolActivityRail({ messages }: { messages: ChatMessage[] }) {
                   </span>
                 </div>
                 {activity.serverName && (
-                  <div className="font-mono text-muted-foreground text-xs">
+                  <div className="font-mono text-[11px] text-white/34">
                     {activity.serverName}
                   </div>
                 )}
                 {activity.summary && (
-                  <div className="text-sm">{activity.summary}</div>
+                  <div className="line-clamp-2 text-[12px] leading-5 text-white/54">{activity.summary}</div>
                 )}
               </div>
             ))}

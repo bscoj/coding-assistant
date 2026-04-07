@@ -260,7 +260,10 @@ const PurePreviewMessage = ({
                 const isLocalFilesystemApproval =
                   mcpServerName === 'local-filesystem';
                 return (
-                  <McpTool key={toolCallId} defaultOpen={true}>
+                  <McpTool
+                    key={toolCallId}
+                    defaultOpen={state === 'approval-requested'}
+                  >
                     <McpToolHeader
                       serverName={mcpServerName}
                       toolName={toolName}
@@ -317,7 +320,7 @@ const PurePreviewMessage = ({
 
               // Render regular tool calls
               return (
-                <Tool key={toolCallId} defaultOpen={true}>
+                <Tool key={toolCallId} defaultOpen={false}>
                   <ToolHeader type={toolName} state={effectiveState} />
                   <ToolContent>
                     <ToolInput input={input} />

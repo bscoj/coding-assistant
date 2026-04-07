@@ -22,7 +22,10 @@ type McpToolProps = Parameters<typeof ToolContainer>[0];
 
 export const McpTool = ({ className, ...props }: McpToolProps) => (
   <ToolContainer
-    className={cn('overflow-hidden rounded-lg bg-muted/30', className)}
+    className={cn(
+      'overflow-hidden rounded-2xl border border-amber-500/20 bg-amber-500/[0.045]',
+      className,
+    )}
     {...props}
   />
 );
@@ -117,31 +120,31 @@ export const McpToolHeader = ({
   state,
   approved,
 }: McpToolHeaderProps) => (
-  <div className="border-border border-b bg-muted/50">
+  <div className="border-b border-amber-500/12 bg-transparent">
     {/* MCP Banner */}
-    <div className="flex items-center gap-2 border-border border-b px-3 py-1.5 text-xs">
-      <ServerIcon className="size-3 text-muted-foreground" />
-      <span className="font-medium text-muted-foreground">
+    <div className="flex items-center gap-2 border-b border-amber-500/12 px-3 py-1.5 text-[11px]">
+      <ServerIcon className="size-3 text-white/42" />
+      <span className="font-medium uppercase tracking-[0.16em] text-white/42">
         Tool Call Request
       </span>
       {serverName && (
         <>
-          <span className="text-muted-foreground/50">•</span>
-          <span className="truncate text-muted-foreground">{serverName}</span>
+          <span className="text-white/20">•</span>
+          <span className="truncate text-white/48">{serverName}</span>
         </>
       )}
-      <span className="text-muted-foreground/50">•</span>
+      <span className="text-white/20">•</span>
       <ApprovalStatusBadge state={state} approved={approved} />
     </div>
     {/* Tool header */}
     <CollapsibleTrigger
       className={cn(
-        'flex w-full min-w-0 items-center justify-between gap-2 px-3 py-2',
+        'flex w-full min-w-0 items-center justify-between gap-2 px-3 py-2.5 hover:bg-white/[0.03] transition-colors',
         className,
       )}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate font-mono text-sm">{toolName}</span>
+        <span className="truncate font-mono text-[13px] text-white/90">{toolName}</span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {/* Only show tool status badge when tool is running/completed (approved) */}
@@ -149,7 +152,7 @@ export const McpToolHeader = ({
           (state === 'approval-responded' && approved === true)) && (
           <ToolStatusBadge state={state} />
         )}
-        <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+        <ChevronDownIcon className="size-4 text-white/38" />
       </div>
     </CollapsibleTrigger>
   </div>
