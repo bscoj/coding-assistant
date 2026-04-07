@@ -31,7 +31,10 @@ After the setup is complete, you can start the agent server and the chat app loc
 uv run start-app
 ```
 
-This will start the agent server and the chat app at http://localhost:8000.
+This starts:
+
+- the agent server at `http://localhost:8000`
+- the bundled chat UI at `http://localhost:3002`
 
 **Next steps**: see [modifying your agent](#modifying-your-agent) to customize and iterate on the agent code.
 
@@ -211,7 +214,17 @@ The chat UI also includes:
    uv run start-app
    ```
 
-   Query your agent via the UI (http://localhost:8000) or REST API:
+   Query your agent via the UI (`http://localhost:3002`) or REST API:
+
+   If you run the nested UI app directly from `e2e-chatbot-app-next`, the recommended local settings are:
+
+   ```bash
+   LOCAL_AUTH_BYPASS=true
+   CHAT_APP_SERVER_PORT=3001
+   CHAT_APP_CLIENT_PORT=3002
+   CHAT_APP_CORS_ORIGIN=http://localhost:3002
+   API_PROXY=http://localhost:8000/invocations
+   ```
 
    **Advanced server options:**
 

@@ -17,7 +17,6 @@ See 'uv run start-server --help' for available options.
 import argparse
 import os
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -66,13 +65,15 @@ class ProcessManager:
             )
 
         if not self.no_ui:
-            frontend_port = int(os.environ.get("CHAT_APP_PORT", os.environ.get("PORT", "3000")))
+            frontend_port = int(
+                os.environ.get("CHAT_APP_PORT", os.environ.get("PORT", "3002"))
+            )
 
             if backend_port == frontend_port:
                 print(
                     f"ERROR: Backend and frontend are both configured to use port {backend_port}."
                 )
-                print("  Set CHAT_APP_PORT in .env to a different port (e.g., CHAT_APP_PORT=3000).")
+                print("  Set CHAT_APP_PORT in .env to a different port (e.g., CHAT_APP_PORT=3002).")
                 sys.exit(1)
 
             if not check_port_available(frontend_port):
@@ -123,7 +124,11 @@ class ProcessManager:
                     elif self.backend_ready and self.frontend_ready:
                         print("\n" + "=" * 50)
                         print("✓ Both frontend and backend are ready!")
-                        print(f"✓ Open the frontend at http://localhost:{self.port}")
+                        frontend_port = os.environ.get(
+                            "CHAT_APP_SERVER_PORT",
+                            os.environ.get("CHAT_APP_PORT", "3002"),
+                        )
+                        print(f"✓ Open the frontend at http://localhost:{frontend_port}")
                         print("=" * 50 + "\n")
 
             process.wait()
@@ -134,39 +139,14 @@ class ProcessManager:
             print(f"Error monitoring {name}: {e}")
             self.failed.set()
 
-    def clone_frontend_if_needed(self):
-        if Path("e2e-chatbot-app-next").exists():
-            return True
+    def resolve_frontend_dir(self):
+        frontend_dir = Path(__file__).resolve().parent.parent / "e2e-chatbot-app-next"
+        if frontend_dir.exists():
+            return frontend_dir
 
-        print("Cloning e2e-chatbot-app-next...")
-        for url in [
-            "https://github.com/databricks/app-templates.git",
-            "git@github.com:databricks/app-templates.git",
-        ]:
-            try:
-                subprocess.run(
-                    ["git", "clone", "--filter=blob:none", "--sparse", url, "temp-app-templates"],
-                    check=True,
-                    capture_output=True,
-                )
-                break
-            except subprocess.CalledProcessError:
-                continue
-        else:
-            print("ERROR: Failed to clone repository.")
-            print(
-                "Manually download from: https://download-directory.github.io/?url=https://github.com/databricks/app-templates/tree/main/e2e-chatbot-app-next"
-            )
-            return False
-
-        subprocess.run(
-            ["git", "sparse-checkout", "set", "e2e-chatbot-app-next"],
-            cwd="temp-app-templates",
-            check=True,
-        )
-        Path("temp-app-templates/e2e-chatbot-app-next").rename("e2e-chatbot-app-next")
-        shutil.rmtree("temp-app-templates", ignore_errors=True)
-        return True
+        print(f"ERROR: Frontend directory not found at {frontend_dir}")
+        print("The UI is expected to live inside agent-langgraph/e2e-chatbot-app-next.")
+        return None
 
     def start_process(self, cmd, name, log_file, patterns, cwd=None):
         print(f"Starting {name}...")
@@ -213,13 +193,18 @@ class ProcessManager:
         if not os.environ.get("DATABRICKS_APP_NAME"):
             self.check_ports()
 
+        frontend_dir = None
         if not self.no_ui:
-            if not self.clone_frontend_if_needed():
-                print("WARNING: Failed to clone frontend. Continuing with backend only.")
+            frontend_dir = self.resolve_frontend_dir()
+            if frontend_dir is None:
+                print("WARNING: Failed to locate frontend. Continuing with backend only.")
                 self.no_ui = True
             else:
-                # Set API_PROXY environment variable for frontend to connect to backend
+                frontend_port = int(
+                    os.environ.get("CHAT_APP_PORT", os.environ.get("PORT", "3002"))
+                )
                 os.environ["API_PROXY"] = f"http://localhost:{self.port}/invocations"
+                os.environ["CHAT_APP_SERVER_PORT"] = str(frontend_port)
 
         # Open log files
         self.backend_log = open("backend.log", "w", buffering=1)
@@ -239,7 +224,6 @@ class ProcessManager:
 
             if not self.no_ui:
                 # Setup and start frontend
-                frontend_dir = Path("e2e-chatbot-app-next")
                 for cmd, desc in [("npm install", "install"), ("npm run build", "build")]:
                     print(f"Running npm {desc}...")
                     result = subprocess.run(
