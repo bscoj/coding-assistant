@@ -17,6 +17,13 @@ import {
   isDatabaseAvailable,
 } from '@chat-template/db';
 import { ChatSDKError, checkChatAccess } from '@chat-template/core';
+import {
+  checkLocalChatAccess,
+  deleteLocalMessagesByChatIdAfterTimestamp,
+  getLocalMessageById,
+  getLocalMessagesByChatId,
+  isLocalChatHistoryEnabled,
+} from '../lib/local-chat-store';
 
 export const messagesRouter: RouterType = Router();
 
@@ -34,7 +41,11 @@ messagesRouter.get(
     if (!id) return;
 
     try {
-      const messages = await getMessagesByChatId({ id });
+      const messages = isDatabaseAvailable()
+        ? await getMessagesByChatId({ id })
+        : isLocalChatHistoryEnabled()
+          ? await getLocalMessagesByChatId(id)
+          : [];
       return res.status(200).json(messages);
     } catch (error) {
       console.error('Error getting messages by chat ID:', error);
@@ -58,14 +69,16 @@ messagesRouter.delete(
         dbAvailable,
       );
 
-      if (!dbAvailable) {
+      if (!dbAvailable && !isLocalChatHistoryEnabled()) {
         console.log('[/api/messages/:id/trailing] Returning 204 No Content');
         return res.status(204).end();
       }
 
       const id = getIdFromRequest(req);
       if (!id) return;
-      const [message] = await getMessageById({ id });
+      const [message] = dbAvailable
+        ? await getMessageById({ id })
+        : await getLocalMessageById(id);
 
       if (!message) {
         const messageError = new ChatSDKError('not_found:message');
@@ -73,10 +86,9 @@ messagesRouter.delete(
         return res.status(response.status).json(response.json);
       }
 
-      const { allowed, reason } = await checkChatAccess(
-        message.chatId,
-        req.session?.user.id,
-      );
+      const { allowed, reason } = dbAvailable
+        ? await checkChatAccess(message.chatId, req.session?.user.id)
+        : await checkLocalChatAccess(message.chatId, req.session?.user.id);
 
       if (!allowed) {
         const chatError = new ChatSDKError('forbidden:chat', reason);
@@ -84,10 +96,17 @@ messagesRouter.delete(
         return res.status(response.status).json(response.json);
       }
 
-      await deleteMessagesByChatIdAfterTimestamp({
-        chatId: message.chatId,
-        timestamp: message.createdAt,
-      });
+      if (dbAvailable) {
+        await deleteMessagesByChatIdAfterTimestamp({
+          chatId: message.chatId,
+          timestamp: message.createdAt,
+        });
+      } else {
+        await deleteLocalMessagesByChatIdAfterTimestamp({
+          chatId: message.chatId,
+          timestamp: message.createdAt,
+        });
+      }
 
       res.json({ success: true });
     } catch (error) {

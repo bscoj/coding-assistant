@@ -21,7 +21,7 @@ but has some [known limitations](#known-limitations) for other use cases. Work i
 
 - **Databricks Agent and Foundation Model Integration**: Direct connection to Databricks Agent serving endpoints and Agent Bricks
 - **Databricks Authentication**: Uses Databricks authentication to identify end users of the chat app and securely manage their conversations.
-- **Persistent Chat History (Optional)**: Leverages Databricks Lakebase (Postgres) for storing conversations, with governance and tight lakehouse integration. Can also run in ephemeral mode without database.
+- **Persistent Chat History (Optional)**: Leverages Databricks Lakebase (Postgres) for storing conversations, with governance and tight lakehouse integration. For local-only development, it can also persist chats to a local JSON file without a database.
 - **User Feedback Collection (Optional)**: Thumbs up/down feedback on assistant messages, stored as MLflow assessments on the underlying traces. Requires an MLflow experiment resource to be configured.
 
 ## Prerequisites
@@ -172,6 +172,7 @@ If you prefer to configure the environment manually:
    CHAT_APP_SERVER_PORT=3001
    CHAT_APP_CLIENT_PORT=3002
    CHAT_APP_CORS_ORIGIN=http://localhost:3002
+   LOCAL_CHAT_HISTORY_ENABLED=true
    API_PROXY=http://localhost:8000/invocations
    ```
 
@@ -197,7 +198,7 @@ Feedback is **disabled by default**. See [Feedback Collection](#feedback-collect
 
 ### Persistent Chat History
 
-By default, conversation messages are stored in memory and lost when the server restarts. To persist chat history across sessions, bind a Lakebase database in `databricks.yml`.
+By default in this customized local setup, conversations are persisted to a local JSON file even when no database is configured. To persist chat history in Databricks-managed infrastructure, bind a Lakebase database in `databricks.yml`.
 
 See [Database Modes](#database-modes) for setup instructions.
 
@@ -216,19 +217,33 @@ This is the default mode when database environment variables are configured. In 
 - Conversations persist across sessions
 - A database connection is required (POSTGRES_URL or PGDATABASE env vars)
 
-#### Ephemeral Mode (without Database)
+#### Local File Mode (without Database)
 
-The application can also run without a database. In this mode:
+The application can also run without a database and still persist chats locally. In this mode:
+
+- Chat conversations are saved to `.local/chat-history.json` by default
+- Users can access their chat history via the sidebar
+- Conversations persist across restarts on the same machine
+- This is intended for local development only
+
+You can disable local persistence explicitly with:
+
+```bash
+LOCAL_CHAT_HISTORY_ENABLED=false
+```
+
+#### Ephemeral Mode (without Database or Local File Mode)
+
+If both the database is unavailable and `LOCAL_CHAT_HISTORY_ENABLED=false`, the app runs in true ephemeral mode:
 
 - Chat conversations work normally but are **not saved**
-- The sidebar shows "No chat history available"
+- The sidebar shows "Chat history is disabled"
 - A small "Ephemeral" indicator appears in the header
 - Users can still have conversations with the AI, but history is lost on page refresh
 
 #### Selecting a Database Mode
 
-The application will default to "Ephemeral mode" when no database environment variables are set.
-To run in persistent mode, ensure your environment contains the following database variables:
+The application will default to local file-backed history when no database environment variables are set. To run in Postgres/Lakebase-backed persistent mode, ensure your environment contains the following database variables:
 
 ```bash
 # Useful for local development

@@ -63,6 +63,17 @@ import { ChatSDKError } from '@chat-template/core/errors';
 import { storeMessageMeta } from '../lib/message-meta-store';
 import { drainStreamToWriter, fallbackToGenerateText } from '../lib/stream-fallback';
 import { getLocalRepoConfig } from '../lib/local-repo-store';
+import {
+  checkLocalChatAccess,
+  deleteLocalChatById,
+  getLocalMessagesByChatId,
+  isLocalChatHistoryEnabled,
+  saveLocalChat,
+  saveLocalMessages,
+  updateLocalChatLastContextById,
+  updateLocalChatTitleById,
+  updateLocalChatVisiblityById,
+} from '../lib/local-chat-store';
 
 export const chatRouter: RouterType = Router();
 
@@ -70,16 +81,26 @@ const streamCache = new StreamCache();
 // Apply auth middleware to all chat routes
 chatRouter.use(authMiddleware);
 
+function shouldUseLocalHistory(dbAvailable: boolean) {
+  return !dbAvailable && isLocalChatHistoryEnabled();
+}
+
 /**
  * POST /api/chat - Send a message and get streaming response
  *
- * Note: Works in ephemeral mode when database is disabled.
- * Streaming continues normally, but no chat/message persistence occurs.
+ * When the database is disabled, this route falls back to local JSON-backed
+ * chat persistence if LOCAL_CHAT_HISTORY_ENABLED is not set to false.
  */
 chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
   const dbAvailable = isDatabaseAvailable();
   if (!dbAvailable) {
-    console.log('[Chat] Running in ephemeral mode - no persistence');
+    console.log(
+      `[Chat] Database unavailable - ${
+        shouldUseLocalHistory(dbAvailable)
+          ? 'using local chat history'
+          : 'running in ephemeral mode'
+      }`,
+    );
   }
 
   let requestBody: PostRequestBody;
@@ -113,10 +134,9 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       return res.status(response.status).json(response.json);
     }
 
-    const { chat, allowed, reason } = await checkChatAccess(
-      id,
-      session?.user.id,
-    );
+    const { chat, allowed, reason } = shouldUseLocalHistory(dbAvailable)
+      ? await checkLocalChatAccess(id, session?.user.id)
+      : await checkChatAccess(id, session?.user.id);
 
     if (reason !== 'not_found' && !allowed) {
       const error = new ChatSDKError('forbidden:chat');
@@ -128,17 +148,28 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
 
     if (!chat) {
       // Only create new chat if we have a message (not a continuation)
-      if (isDatabaseAvailable() && message) {
-        await saveChat({
+      if (message) {
+        const chatRecord = {
           id,
           userId: session.user.id,
           title: 'New chat',
           visibility: selectedVisibilityType,
-        });
+          createdAt: new Date(),
+          lastContext: null,
+        };
+        if (dbAvailable) {
+          await saveChat(chatRecord);
+        } else if (isLocalChatHistoryEnabled()) {
+          await saveLocalChat(chatRecord);
+        }
 
         titlePromise = generateTitleFromUserMessage({ message })
           .then(async (title) => {
-            await updateChatTitleById({ chatId: id, title });
+            if (dbAvailable) {
+              await updateChatTitleById({ chatId: id, title });
+            } else if (isLocalChatHistoryEnabled()) {
+              await updateLocalChatTitleById({ chatId: id, title });
+            }
             return title;
           })
           .catch(async (error) => {
@@ -151,7 +182,11 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
                 textFromUserMessage,
                 128,
               );
-              await updateChatTitleById({ chatId: id, title: fallback });
+              if (dbAvailable) {
+                await updateChatTitleById({ chatId: id, title: fallback });
+              } else if (isLocalChatHistoryEnabled()) {
+                await updateLocalChatTitleById({ chatId: id, title: fallback });
+              }
               return fallback;
             }
             return null;
@@ -165,7 +200,11 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       }
     }
 
-    const messagesFromDb = await getMessagesByChatId({ id });
+    const messagesFromDb = dbAvailable
+      ? await getMessagesByChatId({ id })
+      : shouldUseLocalHistory(dbAvailable)
+        ? await getLocalMessagesByChatId(id)
+        : [];
 
     // Use previousMessages from request body when:
     // 1. Ephemeral mode (DB not available) - always use client-side messages
@@ -181,43 +220,47 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     let uiMessages: ChatMessage[];
     if (message) {
       uiMessages = [...previousMessages, message];
-      await saveMessages({
-        messages: [
-          {
-            chatId: id,
-            id: message.id,
-            role: 'user',
-            parts: message.parts,
-            attachments: [],
-            createdAt: new Date(),
-            traceId: null,
-          },
-        ],
-      });
+      const persistedMessage = {
+        chatId: id,
+        id: message.id,
+        role: 'user',
+        parts: message.parts,
+        attachments: [],
+        createdAt: new Date(),
+        traceId: null,
+      };
+      if (dbAvailable) {
+        await saveMessages({ messages: [persistedMessage] });
+      } else if (shouldUseLocalHistory(dbAvailable)) {
+        await saveLocalMessages([persistedMessage]);
+      }
     } else {
       // Continuation: use existing messages without adding new user message
       uiMessages = previousMessages as ChatMessage[];
 
       // For continuations with database enabled, save any updated assistant messages
       // This ensures tool-result parts (like MCP approval responses) are persisted
-      if (dbAvailable && requestBody.previousMessages) {
+      if ((dbAvailable || shouldUseLocalHistory(dbAvailable)) && requestBody.previousMessages) {
         const assistantMessages = requestBody.previousMessages.filter(
           (m: ChatMessage) => m.role === 'assistant',
         );
         if (assistantMessages.length > 0) {
-          await saveMessages({
-            messages: assistantMessages.map((m: ChatMessage) => ({
-              chatId: id,
-              id: m.id,
-              role: m.role,
-              parts: m.parts,
-              attachments: [],
-              createdAt: m.metadata?.createdAt
-                ? new Date(m.metadata.createdAt)
-                : new Date(),
-              traceId: null,
-            })),
-          });
+          const persistedMessages = assistantMessages.map((m: ChatMessage) => ({
+            chatId: id,
+            id: m.id,
+            role: m.role,
+            parts: m.parts,
+            attachments: [],
+            createdAt: m.metadata?.createdAt
+              ? new Date(m.metadata.createdAt)
+              : new Date(),
+            traceId: null,
+          }));
+          if (dbAvailable) {
+            await saveMessages({ messages: persistedMessages });
+          } else {
+            await saveLocalMessages(persistedMessages);
+          }
 
           // Check if this is an MCP denial - if so, we're done (no need to call LLM)
           // Denial is indicated by a dynamic-tool part with state 'output-denied'
@@ -357,29 +400,39 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
         storeMessageMeta(responseMessage.id, id, traceId);
 
         try {
-          await saveMessages({
-            messages: [
-              {
-                id: responseMessage.id,
-                role: responseMessage.role,
-                parts: responseMessage.parts,
-                createdAt: new Date(),
-                attachments: [],
-                chatId: id,
-                traceId, // Store trace ID for feedback
-              },
-            ],
-          });
+          const persistedResponse = {
+            id: responseMessage.id,
+            role: responseMessage.role,
+            parts: responseMessage.parts,
+            createdAt: new Date(),
+            attachments: [],
+            chatId: id,
+            traceId,
+          };
+          if (dbAvailable) {
+            await saveMessages({
+              messages: [persistedResponse],
+            });
+          } else if (shouldUseLocalHistory(dbAvailable)) {
+            await saveLocalMessages([persistedResponse]);
+          }
         } catch (err) {
           console.error('[onFinish] Failed to save assistant message:', err);
         }
 
         if (finalUsage) {
           try {
-            await updateChatLastContextById({
-              chatId: id,
-              context: toV3Usage(finalUsage),
-            });
+            if (dbAvailable) {
+              await updateChatLastContextById({
+                chatId: id,
+                context: toV3Usage(finalUsage),
+              });
+            } else if (shouldUseLocalHistory(dbAvailable)) {
+              await updateLocalChatLastContextById({
+                chatId: id,
+                context: toV3Usage(finalUsage),
+              });
+            }
           } catch (err) {
             console.warn('Unable to persist last usage for chat', id, err);
           }
@@ -429,7 +482,9 @@ chatRouter.delete(
     const id = getIdFromRequest(req);
     if (!id) return;
 
-    const deletedChat = await deleteChatById({ id });
+    const deletedChat = shouldUseLocalHistory(isDatabaseAvailable())
+      ? await deleteLocalChatById(id)
+      : await deleteChatById({ id });
     return res.status(200).json(deletedChat);
   },
 );
@@ -445,7 +500,9 @@ chatRouter.get(
     const id = getIdFromRequest(req);
     if (!id) return;
 
-    const { chat } = await checkChatAccess(id, req.session?.user.id);
+    const { chat } = shouldUseLocalHistory(isDatabaseAvailable())
+      ? await checkLocalChatAccess(id, req.session?.user.id)
+      : await checkChatAccess(id, req.session?.user.id);
 
     return res.status(200).json(chat);
   },
@@ -476,10 +533,9 @@ chatRouter.get(
       return res.status(response.status).json(response.json);
     }
 
-    const { allowed, reason } = await checkChatAccess(
-      chatId,
-      req.session?.user.id,
-    );
+    const { allowed, reason } = shouldUseLocalHistory(isDatabaseAvailable())
+      ? await checkLocalChatAccess(chatId, req.session?.user.id)
+      : await checkChatAccess(chatId, req.session?.user.id);
 
     // If chat doesn't exist in DB, it's a temporary chat from the homepage - allow it
     if (reason === 'not_found') {
@@ -557,7 +613,11 @@ chatRouter.patch(
         return res.status(400).json({ error: 'Invalid visibility type' });
       }
 
-      await updateChatVisiblityById({ chatId: id, visibility });
+      if (shouldUseLocalHistory(isDatabaseAvailable())) {
+        await updateLocalChatVisiblityById({ chatId: id, visibility });
+      } else {
+        await updateChatVisiblityById({ chatId: id, visibility });
+      }
       res.json({ success: true });
     } catch (error) {
       console.error('Error updating visibility:', error);

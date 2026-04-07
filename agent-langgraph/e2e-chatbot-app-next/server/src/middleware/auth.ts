@@ -1,7 +1,12 @@
 import type { Request, Response, NextFunction } from 'express';
 import { getAuthSession, type AuthSession } from '@chat-template/auth';
+import { isDatabaseAvailable } from '@chat-template/db';
 import { checkChatAccess } from '@chat-template/core';
 import { ChatSDKError } from '@chat-template/core/errors';
+import {
+  checkLocalChatAccess,
+  isLocalChatHistoryEnabled,
+} from '../lib/local-chat-store';
 
 // Extend Express Request type to include session
 declare global {
@@ -59,7 +64,10 @@ export async function requireChatAccess(
     const response = error.toResponse();
     return res.status(response.status).json(response.json);
   }
-  const { allowed, reason } = await checkChatAccess(id, req.session?.user.id);
+  const { allowed, reason } =
+    !isDatabaseAvailable() && isLocalChatHistoryEnabled()
+      ? await checkLocalChatAccess(id, req.session?.user.id)
+      : await checkChatAccess(id, req.session?.user.id);
   if (!allowed) {
     console.error(
       'Chat access middleware error: user does not have access to chat',

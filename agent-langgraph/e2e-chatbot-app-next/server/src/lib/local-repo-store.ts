@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export interface LocalRepoConfig {
   path: string | null;
@@ -8,7 +9,9 @@ export interface LocalRepoConfig {
   updatedAt: string | null;
 }
 
-const STORE_PATH = path.resolve(process.cwd(), '.local', 'active-repo.json');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const STORE_PATH = path.resolve(__dirname, '../../.local/active-repo.json');
 
 function ensureStoreDir() {
   fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });

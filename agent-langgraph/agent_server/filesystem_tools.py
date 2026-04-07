@@ -61,6 +61,56 @@ def writes_enabled() -> bool:
     return os.getenv("FILES_WRITE_ENABLED", "true").lower() not in {"0", "false", "no"}
 
 
+def _normalize_glob(glob: str | None) -> str | None:
+    if glob is None:
+        return None
+    value = glob.strip()
+    return value or None
+
+
+def _user_requested_repo_wide_search() -> bool:
+    summary = (_latest_user_request_summary() or "").lower()
+    phrases = (
+        "whole repo",
+        "entire repo",
+        "entire repository",
+        "whole repository",
+        "across the repo",
+        "across the repository",
+        "search everything",
+        "search the repo",
+        "search the repository",
+        "all files",
+    )
+    return any(phrase in summary for phrase in phrases)
+
+
+def _is_overly_broad_glob(glob: str | None) -> bool:
+    normalized = _normalize_glob(glob)
+    if normalized is None:
+        return False
+    broad_literals = {"*", "*.*", "**", "**/*", "**/*.*", "./**/*", "./**/*.*"}
+    if normalized in broad_literals:
+        return True
+    if "**" not in normalized:
+        return False
+    # Treat recursive globs without a meaningful path prefix or extension filter as too broad.
+    has_path_prefix = "/" in normalized.replace("./", "", 1)
+    has_extension_filter = "." in normalized.split("/")[-1].replace("*", "")
+    return not has_path_prefix and not has_extension_filter
+
+
+def _search_scope_error(glob: str | None) -> str:
+    requested = glob or "(none)"
+    return (
+        f"Refusing broad search scope for glob {requested!r}. "
+        "Narrow the search first: use workspace_overview() to inspect the repo, "
+        "find_files_by_name() to locate likely files, or search_files() with a scoped path/glob "
+        "such as 'src/**/*.ts', 'agent_server/**/*.py', or a specific subdirectory. "
+        "Repo-wide wildcard searches should only be used when the user explicitly requests them."
+    )
+
+
 def _resolve_path(path: str) -> Path:
     candidate = Path(path)
     if not candidate.is_absolute():
@@ -343,11 +393,14 @@ def find_files_by_name(query: str, limit: int = 20) -> str:
 def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
     """Search for text in files under the workspace root. Returns matching file paths and lines."""
     base = _resolve_path(path)
+    normalized_glob = _normalize_glob(glob)
+    if _is_overly_broad_glob(normalized_glob) and not _user_requested_repo_wide_search():
+        return _search_scope_error(normalized_glob)
     rg = shutil.which("rg")
     if rg:
         cmd = [rg, "-n", "--hidden", "--glob", "!.git", query, str(base)]
-        if glob:
-            cmd.extend(["-g", glob])
+        if normalized_glob:
+            cmd.extend(["-g", normalized_glob])
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         output = result.stdout.strip()
         if not output:
@@ -359,7 +412,7 @@ def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
     for file_path in sorted(base.rglob("*")):
         if not file_path.is_file():
             continue
-        if glob and not file_path.match(glob):
+        if normalized_glob and not file_path.match(normalized_glob):
             continue
         try:
             text = _read_text(file_path)

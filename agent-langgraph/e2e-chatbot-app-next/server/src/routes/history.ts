@@ -7,6 +7,10 @@ import {
 import { authMiddleware, requireAuth } from '../middleware/auth';
 import { getChatsByUserId, isDatabaseAvailable } from '@chat-template/db';
 import { ChatSDKError } from '@chat-template/core/errors';
+import {
+  getLocalChatsByUserId,
+  isLocalChatHistoryEnabled,
+} from '../lib/local-chat-store';
 
 export const historyRouter: RouterType = Router();
 
@@ -23,7 +27,7 @@ historyRouter.get('/', requireAuth, async (req: Request, res: Response) => {
   const dbAvailable = isDatabaseAvailable();
   console.log('[/api/history] Database available:', dbAvailable);
 
-  if (!dbAvailable) {
+  if (!dbAvailable && !isLocalChatHistoryEnabled()) {
     console.log('[/api/history] Returning 204 No Content');
     return res.status(204).end();
   }
@@ -49,12 +53,19 @@ historyRouter.get('/', requireAuth, async (req: Request, res: Response) => {
   }
 
   try {
-    const chats = await getChatsByUserId({
-      id: session.user.id,
-      limit,
-      startingAfter: startingAfter ?? null,
-      endingBefore: endingBefore ?? null,
-    });
+    const chats = dbAvailable
+      ? await getChatsByUserId({
+          id: session.user.id,
+          limit,
+          startingAfter: startingAfter ?? null,
+          endingBefore: endingBefore ?? null,
+        })
+      : await getLocalChatsByUserId({
+          id: session.user.id,
+          limit,
+          startingAfter: startingAfter ?? null,
+          endingBefore: endingBefore ?? null,
+        });
 
     res.json(chats);
   } catch (error) {

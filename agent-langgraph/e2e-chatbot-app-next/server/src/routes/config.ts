@@ -13,6 +13,7 @@ import {
 } from '../lib/local-repo-store';
 import { getLocalAgentModelConfig } from '../lib/local-agent-config';
 import { pickFolder } from '../lib/folder-picker';
+import { isLocalChatHistoryEnabled } from '../lib/local-chat-store';
 import {
   getSharedProfile,
   saveSharedProfile,
@@ -64,7 +65,7 @@ configRouter.get('/', async (req: Request, res: Response) => {
 
   res.json({
     features: {
-      chatHistory: isDatabaseAvailable(),
+      chatHistory: isDatabaseAvailable() || isLocalChatHistoryEnabled(),
       feedback: !!process.env.MLFLOW_EXPERIMENT_ID,
     },
     repo,
