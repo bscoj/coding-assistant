@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DEFAULT_AGENT_ROOT = path.resolve(process.cwd(), '..');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DEFAULT_AGENT_ROOT = path.resolve(__dirname, '../../../../');
 
 export type LocalAgentModelConfig = {
   defaultModel: string | null;

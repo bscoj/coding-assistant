@@ -1,8 +1,11 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DEFAULT_AGENT_ROOT = path.resolve(process.cwd(), '..');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DEFAULT_AGENT_ROOT = path.resolve(__dirname, '../../../../');
 const PROFILE_KINDS = new Set([
   'coding_preference',
   'workstyle_preference',
