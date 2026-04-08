@@ -27,7 +27,6 @@ import { softNavigateToChatId } from '@/lib/navigation';
 import { useAppConfig } from '@/contexts/AppConfigContext';
 import { Greeting } from './greeting';
 import { ToolActivityRail } from './tool-activity-rail';
-import { RepoPicker } from './repo-picker';
 import { useLocalStorage } from 'usehooks-ts';
 
 export function Chat({
@@ -57,8 +56,7 @@ export function Chat({
 
   const { mutate } = useSWRConfig();
   const { setDataStream } = useDataStream();
-  const { chatHistoryEnabled, hasRepoConfigured, repo } = useAppConfig();
-  const [repoPickerOpen, setRepoPickerOpen] = useState(false);
+  const { chatHistoryEnabled } = useAppConfig();
   const [selectedChatModel, setSelectedChatModel] = useLocalStorage(
     'chat-model',
     initialChatModel,
@@ -316,16 +314,10 @@ export function Chat({
         />
         <div className="flex min-h-0 flex-1 overflow-y-auto overscroll-contain touch-pan-y p-4">
           <div className="m-auto flex w-full max-w-4xl flex-col">
-            {hasRepoConfigured && repo?.path && (
-              <div className="mx-auto mb-6 w-full max-w-2xl rounded-2xl border border-white/[0.08] bg-white/[0.02] px-4 py-3 text-sm text-white/50">
-                Active repo: <span className="font-mono text-white/75">{repo.path}</span>
-              </div>
-            )}
             <Greeting />
             {inputElement}
           </div>
         </div>
-        <RepoPicker open={repoPickerOpen} onOpenChange={setRepoPickerOpen} />
       </div>
     );
   }

@@ -61,7 +61,7 @@ function PureMultimodalInput({
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
-  const { chatHistoryEnabled } = useAppConfig();
+  const { chatHistoryEnabled, repo } = useAppConfig();
 
   const adjustHeight = useCallback(() => {
     if (textareaRef.current) {
@@ -325,10 +325,11 @@ function PureMultimodalInput({
         </PromptInput>
 
       </div>
-
-      <p className="-mt-1 text-center text-xs tracking-[0.02em] text-white/34">
-        Review suggestions and diffs before allowing changes.
-      </p>
+      {repo?.path && (
+        <p className="-mt-1 text-center text-xs tracking-[0.02em] text-white/38">
+          Active repo: <span className="font-mono text-white/62">{repo.path}</span>
+        </p>
+      )}
 
       {messages.length === 0 &&
         attachments.length === 0 &&

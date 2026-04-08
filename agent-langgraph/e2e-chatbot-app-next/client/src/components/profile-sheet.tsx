@@ -45,6 +45,48 @@ const KIND_OPTIONS = [
   { value: 'constraint', label: 'Constraint' },
 ];
 
+function getKindLabel(kind: string) {
+  return KIND_OPTIONS.find((option) => option.value === kind)?.label ?? kind;
+}
+
+function kindSortValue(kind: string) {
+  const index = KIND_OPTIONS.findIndex((option) => option.value === kind);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function buildProfileMarkdown(profile: ProfileDocument, entries: ProfileEntry[]) {
+  const grouped = entries.reduce<Record<string, ProfileEntry[]>>((acc, entry) => {
+    if (!acc[entry.kind]) {
+      acc[entry.kind] = [];
+    }
+    acc[entry.kind].push(entry);
+    return acc;
+  }, {});
+
+  const sections = Object.keys(grouped)
+    .sort((a, b) => kindSortValue(a) - kindSortValue(b) || a.localeCompare(b))
+    .map((kind) => {
+      const items = grouped[kind]
+        .filter((entry) => entry.status === 'active')
+        .map((entry) => `- ${entry.content.trim()}`)
+        .join('\n');
+      return items ? `## ${getKindLabel(kind)}\n\n${items}` : null;
+    })
+    .filter((section): section is string => section !== null);
+
+  return [
+    `# ${profile.title}`,
+    '',
+    `- Scope: ${profile.scope}`,
+    ...(profile.workspace_name ? [`- Workspace: ${profile.workspace_name}`] : []),
+    ...(profile.path ? [`- Source: ${profile.path}`] : []),
+    ...(profile.updated_at ? [`- Updated: ${profile.updated_at}`] : []),
+    '',
+    ...sections,
+    '',
+  ].join('\n');
+}
+
 async function loadProfile(scope: ProfileScope) {
   const response = await fetchWithErrorHandlers(`/api/config/profile?scope=${scope}`);
   return (await response.json()) as ProfileDocument;
@@ -126,6 +168,36 @@ export function ProfileSheet({
     return JSON.stringify(profile.entries) !== JSON.stringify(draftEntries);
   }, [profile.entries, draftEntries]);
 
+  const groupedEntries = useMemo(() => {
+    const groups = draftEntries.reduce<
+      Array<{ kind: string; label: string; items: Array<{ entry: ProfileEntry; index: number }> }>
+    >((acc, entry, index) => {
+      let group = acc.find((candidate) => candidate.kind === entry.kind);
+      if (!group) {
+        group = {
+          kind: entry.kind,
+          label: getKindLabel(entry.kind),
+          items: [],
+        };
+        acc.push(group);
+      }
+      group.items.push({ entry, index });
+      return acc;
+    }, []);
+
+    return groups
+      .map((group) => ({
+        ...group,
+        items: [...group.items].sort((a, b) => {
+          if (a.entry.status !== b.entry.status) {
+            return a.entry.status === 'active' ? -1 : 1;
+          }
+          return a.entry.content.localeCompare(b.entry.content);
+        }),
+      }))
+      .sort((a, b) => kindSortValue(a.kind) - kindSortValue(b.kind) || a.label.localeCompare(b.label));
+  }, [draftEntries]);
+
   function updateEntry(index: number, patch: Partial<ProfileEntry>) {
     setDraftEntries((current) =>
       current.map((entry, entryIndex) =>
@@ -170,6 +242,20 @@ export function ProfileSheet({
     } finally {
       setIsSaving(false);
     }
+  }
+
+  function handleExportMarkdown() {
+    const markdown = buildProfileMarkdown(profile, draftEntries);
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const scopeSuffix = profile.scope === 'project' && profile.workspace_name
+      ? `-${profile.workspace_name}`
+      : `-${profile.scope}`;
+    anchor.href = url;
+    anchor.download = `coding-buddy-profile${scopeSuffix}.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -262,8 +348,8 @@ export function ProfileSheet({
           ) : (
             <>
               <div className="border-b border-white/[0.08] px-6 py-5">
-                <div className="space-y-3">
-                  <div className="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+              <div className="space-y-3">
+                <div className="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
                     <select
                       value={newKind}
                       onChange={(event) => setNewKind(event.target.value)}
@@ -306,40 +392,52 @@ export function ProfileSheet({
                   </p>
                 ) : (
                   <div className="space-y-4">
-                    {draftEntries.map((entry, index) => (
+                    {groupedEntries.map((group) => (
                       <div
-                        key={`${entry.kind}-${entry.content}-${index}`}
-                        className="space-y-3 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4"
+                        key={group.kind}
+                        className="space-y-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4"
                       >
                         <div className="flex items-center justify-between gap-3">
-                          <select
-                            value={entry.kind}
-                            onChange={(event) =>
-                              updateEntry(index, { kind: event.target.value })
-                            }
-                            className="rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1.5 text-xs text-white outline-hidden"
-                          >
-                            {KIND_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value} className="bg-[#0b1016]">
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            onClick={() => removeEntry(index)}
-                            className="text-xs text-white/45 hover:text-white"
-                          >
-                            Remove
-                          </button>
+                          <div>
+                            <div className="text-sm font-medium text-white/92">{group.label}</div>
+                            <div className="text-xs text-white/45">
+                              {group.items.length} {group.items.length === 1 ? 'entry' : 'entries'}
+                            </div>
+                          </div>
+                          <Badge variant="secondary" className="rounded-full bg-white/[0.06] text-white/72">
+                            {group.kind}
+                          </Badge>
                         </div>
-                        <Textarea
-                          value={entry.content}
-                          onChange={(event) =>
-                            updateEntry(index, { content: event.target.value })
-                          }
-                          className="min-h-[92px] border-white/[0.08] bg-[#0f141b] text-sm text-white placeholder:text-white/35"
-                        />
+                        <div className="space-y-3">
+                          {group.items.map(({ entry, index }) => (
+                            <div
+                              key={`${group.kind}-${index}`}
+                              className="space-y-3 rounded-xl border border-white/[0.06] bg-[#0f141b] p-3"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-white/38">
+                                  <span>{entry.status}</span>
+                                  <span className="text-white/18">•</span>
+                                  <span>{Math.round(entry.confidence * 100)}%</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => removeEntry(index)}
+                                  className="text-xs text-white/45 hover:text-white"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              <Textarea
+                                value={entry.content}
+                                onChange={(event) =>
+                                  updateEntry(index, { content: event.target.value })
+                                }
+                                className="min-h-[74px] border-white/[0.08] bg-[#0c1118] text-sm text-white placeholder:text-white/35"
+                              />
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -357,6 +455,14 @@ export function ProfileSheet({
                 {profile.path ? `Stored at ${profile.path}` : 'No profile file yet'}
               </p>
               <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleExportMarkdown}
+                  className="rounded-full border-white/[0.08] bg-transparent text-white hover:bg-white/[0.06] hover:text-white"
+                >
+                  Export .md
+                </Button>
                 <Button
                   type="button"
                   variant="outline"

@@ -12,14 +12,11 @@ export const Greeting = () => {
         exit={{ opacity: 0, y: 10 }}
         className="space-y-3 text-center"
       >
-        <div className="text-[11px] font-medium uppercase tracking-[0.28em] text-white/38">
-          Local Coding Agent
-        </div>
         <div className="text-3xl font-semibold tracking-[-0.04em] text-white/92 md:text-4xl">
-          What should we change?
+          What are we working on today?
         </div>
         <div className="mx-auto max-w-xl text-sm text-white/48 md:text-base">
-          Search the repo, inspect code, review diffs, and approve edits only when you want them applied.
+          Inspect the codebase, reason through the change, and allow edits only when you want them applied.
         </div>
       </motion.div>
     </div>
