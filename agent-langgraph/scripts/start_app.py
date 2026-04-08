@@ -208,7 +208,7 @@ class ProcessManager:
         print(f"\nLast 50 lines of {log_path}:")
         print("-" * 40)
         try:
-            lines = Path(log_path).read_text().splitlines()
+            lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
             print("\n".join(lines[-50:]))
         except FileNotFoundError:
             print(f"(no {log_path} found)")
@@ -257,9 +257,9 @@ class ProcessManager:
         # Open log files
         backend_log_path = self.repo_root / "backend.log"
         frontend_log_path = self.repo_root / "frontend.log"
-        self.backend_log = open(backend_log_path, "w", buffering=1)
+        self.backend_log = open(backend_log_path, "w", buffering=1, encoding="utf-8")
         if not self.no_ui:
-            self.frontend_log = open(frontend_log_path, "w", buffering=1)
+            self.frontend_log = open(frontend_log_path, "w", buffering=1, encoding="utf-8")
 
         try:
             # Build backend command, passing through all arguments
