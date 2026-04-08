@@ -429,7 +429,7 @@ export function SidebarHistory({ user }: { user?: ClientUser | null }) {
             <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
             <AlertDialogDescription>
               This action cannot be undone. This will permanently delete your
-              chat and remove it from our servers.
+              chat and remove it from your local storage.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
