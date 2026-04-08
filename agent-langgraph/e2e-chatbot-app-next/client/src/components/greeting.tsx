@@ -16,7 +16,7 @@ export const Greeting = () => {
           What are we working on today?
         </div>
         <div className="mx-auto max-w-xl text-sm text-white/48 md:text-base">
-          Inspect the codebase, reason through the change, and allow edits only when you want them applied.
+          Inspect the codebase, reason through change, and allow edits only when you want.
         </div>
       </motion.div>
     </div>
