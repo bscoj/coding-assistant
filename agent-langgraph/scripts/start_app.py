@@ -32,6 +32,18 @@ UI_BACKEND_READY = [r"Backend service is running on", r"Server is running on htt
 UI_FRONTEND_READY = [r"Local:\s+http://localhost", r"localhost:\d+"]
 
 
+def is_windows() -> bool:
+    return os.name == "nt"
+
+
+def npm_command() -> str:
+    return "npm.cmd" if is_windows() else "npm"
+
+
+def backend_command() -> list[str]:
+    return [sys.executable, "-m", "agent_server.start_server"]
+
+
 def check_port_available(port: int) -> bool:
     """Check if a port is available by attempting to bind to it."""
     try:
@@ -239,7 +251,7 @@ class ProcessManager:
 
         try:
             # Build backend command, passing through all arguments
-            backend_cmd = ["uv", "run", "start-server"]
+            backend_cmd = backend_command()
             if backend_args:
                 backend_cmd.extend(backend_args)
 
@@ -253,14 +265,17 @@ class ProcessManager:
                 if not node_modules_dir.exists():
                     print("Installing UI dependencies...")
                     result = subprocess.run(
-                        ["npm", "install"], cwd=frontend_dir, capture_output=True, text=True
+                        [npm_command(), "install"],
+                        cwd=frontend_dir,
+                        capture_output=True,
+                        text=True,
                     )
                     if result.returncode != 0:
                         print(f"npm install failed: {result.stderr}")
                         return 1
 
                 self.frontend_process = self.start_process(
-                    ["npm", "run", "dev"],
+                    [npm_command(), "run", "dev"],
                     "frontend",
                     self.frontend_log,
                     [],
