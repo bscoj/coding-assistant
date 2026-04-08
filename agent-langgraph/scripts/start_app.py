@@ -41,9 +41,11 @@ def npm_command() -> str:
 
 
 def backend_command() -> list[str]:
-    if is_windows():
-        return ["uv.exe", "run", "start-server"]
-    return ["uv", "run", "start-server"]
+    return [
+        sys.executable,
+        "-c",
+        "from agent_server.start_server import main; main()",
+    ]
 
 
 def check_port_available(port: int) -> bool:
