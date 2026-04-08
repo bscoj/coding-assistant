@@ -188,7 +188,14 @@ class ProcessManager:
     def start_process(self, cmd, name, log_file, patterns, cwd=None):
         print(f"Starting {name}...")
         process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, cwd=cwd
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            cwd=cwd,
         )
 
         thread = threading.Thread(
@@ -278,6 +285,8 @@ class ProcessManager:
                         cwd=frontend_dir,
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                     )
                     if result.returncode != 0:
                         print(f"npm install failed: {result.stderr}")
