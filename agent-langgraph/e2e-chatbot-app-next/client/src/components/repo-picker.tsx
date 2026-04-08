@@ -45,6 +45,20 @@ export function RepoPicker({
     }
   }
 
+  async function handleClear() {
+    setError(null);
+    setIsSaving(true);
+    try {
+      setPath('');
+      await setRepoPath(null);
+      onOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   async function handleBrowse() {
     setError(null);
     setIsBrowsing(true);
@@ -115,6 +129,17 @@ export function RepoPicker({
           <AlertDialogCancel className="border-white/[0.08] bg-transparent text-white hover:bg-white/[0.06] hover:text-white">
             Cancel
           </AlertDialogCancel>
+          {repo?.path ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void handleClear()}
+              disabled={isSaving || isBrowsing}
+              className="border-white/[0.08] bg-transparent text-white/80 hover:bg-white/[0.06] hover:text-white"
+            >
+              Clear Repo
+            </Button>
+          ) : null}
           <AlertDialogAction
             onClick={(event) => {
               event.preventDefault();

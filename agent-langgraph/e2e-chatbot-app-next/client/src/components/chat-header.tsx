@@ -99,18 +99,18 @@ export function ChatHeader({
           </Button>
           <Button
             variant="outline"
-            className="h-8 rounded-full border-white/[0.08] bg-white/[0.04] px-3 text-xs text-white/80 hover:bg-white/[0.08] hover:text-white"
-            onClick={() => setProfileOpen(true)}
+            className="h-8 max-w-[180px] rounded-full border-white/[0.08] bg-white/[0.04] px-3 text-xs text-white/80 hover:bg-white/[0.08] hover:text-white"
+            onClick={() => setRepoPickerOpen(true)}
           >
-            <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
-            Profile
+            <span className="truncate">{repo?.name ?? 'Select Repo'}</span>
           </Button>
           <Button
             variant="outline"
-            className="h-8 rounded-full border-white/[0.08] bg-white/[0.04] px-3 text-xs text-white/80 hover:bg-white/[0.08] hover:text-white"
-            onClick={() => setRepoPickerOpen(true)}
+            className="h-8 rounded-full border-white/[0.12] bg-[linear-gradient(180deg,rgba(255,255,255,0.09),rgba(255,255,255,0.04))] px-3 text-xs text-white/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)] hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.13),rgba(255,255,255,0.06))] hover:text-white"
+            onClick={() => setProfileOpen(true)}
           >
-            {repo?.name ?? 'Select Repo'}
+            <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5 text-white/72" />
+            Profile
           </Button>
           {!chatHistoryEnabled && (
             <TooltipProvider>

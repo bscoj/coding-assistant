@@ -7,6 +7,23 @@ import {
   oneLight,
 } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
+const darkCodeTheme = {
+  ...oneDark,
+  'pre[class*="language-"]': {
+    ...(oneDark['pre[class*="language-"]'] || {}),
+    background: '#0b1220',
+    color: '#f3f6fb',
+    textShadow: 'none',
+  },
+  'code[class*="language-"]': {
+    ...(oneDark['code[class*="language-"]'] || {}),
+    color: '#f3f6fb',
+    textShadow: 'none',
+    fontFamily:
+      'JetBrains Mono, SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas, monospace',
+  },
+};
+
 type CodeBlockContextType = {
   code: string;
 };
@@ -33,7 +50,7 @@ export const CodeBlock = ({
   <CodeBlockContext.Provider value={{ code }}>
     <div
       className={cn(
-        'relative w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0d1117] text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]',
+        'relative w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0b1220] text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]',
         className,
       )}
       {...props}
@@ -73,23 +90,23 @@ export const CodeBlock = ({
           }}
           customStyle={{
             margin: 0,
-            padding: '1rem 1.1rem',
-            fontSize: '0.84rem',
-            lineHeight: '1.65',
-            background: '#0d1117',
-            color: '#e6edf3',
+            padding: '1.05rem 1.15rem',
+            fontSize: '0.88rem',
+            lineHeight: '1.72',
+            background: '#0b1220',
+            color: '#f3f6fb',
             overflowX: 'auto',
             overflowWrap: 'normal',
             wordBreak: 'normal',
           }}
           language={language}
           lineNumberStyle={{
-            color: 'hsl(var(--muted-foreground))',
+            color: 'rgba(180, 194, 214, 0.55)',
             paddingRight: '1rem',
             minWidth: '2.5rem',
           }}
           showLineNumbers={showLineNumbers}
-          style={oneDark}
+          style={darkCodeTheme}
         >
           {code}
         </SyntaxHighlighter>
