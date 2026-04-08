@@ -45,7 +45,7 @@ const PurePreviewMessage = ({
   allMessages,
   isLoading,
   setMessages,
-  addToolApprovalResponse,
+  addToolOutput,
   sendMessage,
   regenerate,
   isReadonly,
@@ -56,7 +56,7 @@ const PurePreviewMessage = ({
   allMessages: ChatMessage[];
   isLoading: boolean;
   setMessages: UseChatHelpers<ChatMessage>['setMessages'];
-  addToolApprovalResponse: UseChatHelpers<ChatMessage>['addToolApprovalResponse'];
+  addToolOutput: UseChatHelpers<ChatMessage>['addToolOutput'];
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
   regenerate: UseChatHelpers<ChatMessage>['regenerate'];
   isReadonly: boolean;
@@ -68,7 +68,7 @@ const PurePreviewMessage = ({
 
   // Hook for handling MCP approval requests
   const { submitApproval, isSubmitting, pendingApprovalId } = useApproval({
-    addToolApprovalResponse,
+    addToolOutput,
     sendMessage,
   });
 
@@ -237,14 +237,24 @@ const PurePreviewMessage = ({
               const mcpServerName =
                 part.callProviderMetadata?.databricks?.mcpServerName?.toString();
 
-              // Extract approval outcome for 'approval-responded' state
-              // When addToolApprovalResponse is called, AI SDK sets the `approval` property
-              // on the tool-call part and changes state to 'approval-responded'
+              const approvalStatusFromOutput =
+                output &&
+                typeof output === 'object' &&
+                '__approvalStatus__' in output
+                  ? (output as { __approvalStatus__?: unknown })
+                      .__approvalStatus__
+                  : undefined;
               const approved: boolean | undefined =
-                'approval' in part ? part.approval?.approved : undefined;
+                'approval' in part
+                  ? part.approval?.approved
+                  : typeof approvalStatusFromOutput === 'boolean'
+                    ? approvalStatusFromOutput
+                    : undefined;
 
-              // When approved but only have approval status (not actual output), show as input-available
               const effectiveState: ToolState = (() => {
+                if (approved === false) {
+                  return 'output-denied';
+                }
                 if (
                   part.providerExecuted &&
                   !isLoading &&
@@ -281,12 +291,14 @@ const PurePreviewMessage = ({
                           onApprove={() =>
                             submitApproval({
                               approvalRequestId: toolCallId,
+                              toolName,
                               approve: true,
                             })
                           }
                           onDeny={() =>
                             submitApproval({
                               approvalRequestId: toolCallId,
+                              toolName,
                               approve: false,
                             })
                           }
@@ -295,7 +307,9 @@ const PurePreviewMessage = ({
                           }
                         />
                       )}
-                      {state === 'output-available' && output != null && (
+                      {effectiveState === 'output-available' &&
+                        output != null &&
+                        approved === undefined && (
                         <ToolOutput
                           output={
                             errorText ? (

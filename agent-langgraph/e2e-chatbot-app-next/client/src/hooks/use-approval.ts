@@ -4,11 +4,12 @@ import type { ChatMessage } from '@chat-template/core';
 
 interface ApprovalSubmission {
   approvalRequestId: string;
+  toolName: string;
   approve: boolean;
 }
 
 interface UseApprovalOptions {
-  addToolApprovalResponse: UseChatHelpers<ChatMessage>['addToolApprovalResponse'];
+  addToolOutput: UseChatHelpers<ChatMessage>['addToolOutput'];
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
 }
 
@@ -20,7 +21,7 @@ interface UseApprovalOptions {
  * 2. Calls sendMessage() without arguments to trigger continuation (for approvals only)
  */
 export function useApproval({
-  addToolApprovalResponse,
+  addToolOutput,
   sendMessage,
 }: UseApprovalOptions) {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -29,15 +30,19 @@ export function useApproval({
   );
 
   const submitApproval = useCallback(
-    async ({ approvalRequestId, approve }: ApprovalSubmission) => {
+    async ({ approvalRequestId, toolName, approve }: ApprovalSubmission) => {
       setIsSubmitting(true);
       setPendingApprovalId(approvalRequestId);
 
       try {
-        // Add tool approval response - this updates the AI SDK state
-        await addToolApprovalResponse({
-          id: approvalRequestId,
-          approved: approve,
+        // Encode approvals as tool outputs for compatibility with OpenAI-like
+        // responses backends, which can reject dedicated approval-response items.
+        await addToolOutput({
+          tool: toolName,
+          toolCallId: approvalRequestId,
+          output: {
+            __approvalStatus__: approve,
+          },
         });
 
         // Only trigger continuation for approvals
@@ -54,7 +59,7 @@ export function useApproval({
         setPendingApprovalId(null);
       }
     },
-    [addToolApprovalResponse, sendMessage],
+    [addToolOutput, sendMessage],
   );
 
   return {
