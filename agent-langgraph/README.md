@@ -25,7 +25,7 @@ This script will:
 uv run quickstart
 ```
 
-After the setup is complete, you can start the agent server and the chat app locally with:
+After the setup is complete, you can start the agent server and the chat app locally with one command:
 
 ```bash
 uv run start-app
@@ -34,7 +34,22 @@ uv run start-app
 This starts:
 
 - the agent server at `http://localhost:8000`
+- the UI backend at `http://localhost:3001`
 - the bundled chat UI at `http://localhost:3002`
+
+`uv run start-app` is the recommended local entry point. It:
+
+- starts the Python agent backend
+- starts the nested UI app
+- wires `API_PROXY` automatically to the local agent backend
+- enables local auth bypass for the UI by default
+
+If you need custom ports, set these in `.env` before starting:
+
+```bash
+CHAT_APP_SERVER_PORT=3001
+CHAT_APP_CLIENT_PORT=3002
+```
 
 **Next steps**: see [modifying your agent](#modifying-your-agent) to customize and iterate on the agent code.
 
@@ -224,6 +239,12 @@ The chat UI also includes:
    CHAT_APP_CLIENT_PORT=3002
    CHAT_APP_CORS_ORIGIN=http://localhost:3002
    API_PROXY=http://localhost:8000/invocations
+   ```
+
+   To run the backend only:
+
+   ```bash
+   uv run start-app --no-ui
    ```
 
    **Advanced server options:**

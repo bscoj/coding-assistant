@@ -28,7 +28,8 @@ from dotenv import load_dotenv
 
 # Readiness patterns
 BACKEND_READY = [r"Uvicorn running on", r"Application startup complete", r"Started server process"]
-FRONTEND_READY = [r"Server is running on http://localhost"]
+UI_BACKEND_READY = [r"Backend service is running on", r"Server is running on http://localhost"]
+UI_FRONTEND_READY = [r"Local:\s+http://localhost", r"localhost:\d+"]
 
 
 def check_port_available(port: int) -> bool:
@@ -46,6 +47,7 @@ class ProcessManager:
         self.backend_process = None
         self.frontend_process = None
         self.backend_ready = False
+        self.ui_backend_ready = False
         self.frontend_ready = False
         self.failed = threading.Event()
         self.backend_log = None
@@ -65,30 +67,33 @@ class ProcessManager:
             )
 
         if not self.no_ui:
-            frontend_port = int(
-                os.environ.get("CHAT_APP_PORT", os.environ.get("PORT", "3002"))
-            )
+            ui_server_port = self.ui_server_port()
+            ui_client_port = self.ui_client_port()
 
-            if backend_port == frontend_port:
+            seen_ports = {
+                backend_port: "agent backend",
+                ui_server_port: "UI backend",
+                ui_client_port: "UI frontend",
+            }
+            if len(seen_ports) < 3:
+                print("ERROR: backend/UI ports must all be different.")
                 print(
-                    f"ERROR: Backend and frontend are both configured to use port {backend_port}."
+                    f"  Current values: backend={backend_port}, ui backend={ui_server_port}, ui frontend={ui_client_port}"
                 )
-                print("  Set CHAT_APP_PORT in .env to a different port (e.g., CHAT_APP_PORT=3002).")
+                print(
+                    "  Set CHAT_APP_SERVER_PORT and CHAT_APP_CLIENT_PORT in e2e-chatbot-app-next/.env"
+                )
                 sys.exit(1)
 
-            if not check_port_available(frontend_port):
-                port_source = (
-                    "CHAT_APP_PORT"
-                    if os.environ.get("CHAT_APP_PORT")
-                    else "PORT"
-                    if os.environ.get("PORT")
-                    else "default"
-                )
-                errors.append(
-                    f"Port {frontend_port} (frontend, source: {port_source}) is already in use.\n"
-                    f"  To free it: lsof -ti :{frontend_port} | xargs kill -9\n"
-                    f"  Or set a different port: CHAT_APP_PORT=<port> in .env"
-                )
+            for port, label in [
+                (ui_server_port, "UI backend"),
+                (ui_client_port, "UI frontend"),
+            ]:
+                if not check_port_available(port):
+                    errors.append(
+                        f"Port {port} ({label}) is already in use.\n"
+                        f"  Change it in e2e-chatbot-app-next/.env or stop the process using that port."
+                    )
 
         if errors:
             print("ERROR: Port(s) already in use:\n")
@@ -97,7 +102,6 @@ class ProcessManager:
             sys.exit(1)
 
     def monitor_process(self, process, name, log_file, patterns):
-        is_ready = False
         try:
             for line in iter(process.stdout.readline, ""):
                 if not line:
@@ -108,26 +112,33 @@ class ProcessManager:
                 print(f"[{name}] {line}")
 
                 # Check readiness
-                if not is_ready and any(re.search(p, line, re.IGNORECASE) for p in patterns):
-                    is_ready = True
+                if name == "backend" and not self.backend_ready and any(
+                    re.search(p, line, re.IGNORECASE) for p in patterns
+                ):
                     if name == "backend":
                         self.backend_ready = True
-                    else:
-                        self.frontend_ready = True
                     print(f"✓ {name.capitalize()} is ready!")
+                elif name == "frontend":
+                    if not self.ui_backend_ready and any(
+                        re.search(p, line, re.IGNORECASE) for p in UI_BACKEND_READY
+                    ):
+                        self.ui_backend_ready = True
+                        print("✓ Ui-backend is ready!")
+                    if not self.frontend_ready and any(
+                        re.search(p, line, re.IGNORECASE) for p in UI_FRONTEND_READY
+                    ):
+                        self.frontend_ready = True
+                        print("✓ Frontend is ready!")
 
                     if self.no_ui and self.backend_ready:
                         print("\n" + "=" * 50)
                         print("✓ Backend is ready! (running without UI)")
                         print(f"✓ API available at http://localhost:{self.port}")
                         print("=" * 50 + "\n")
-                    elif self.backend_ready and self.frontend_ready:
+                    elif self.backend_ready and self.ui_backend_ready and self.frontend_ready:
                         print("\n" + "=" * 50)
-                        print("✓ Both frontend and backend are ready!")
-                        frontend_port = os.environ.get(
-                            "CHAT_APP_SERVER_PORT",
-                            os.environ.get("CHAT_APP_PORT", "3002"),
-                        )
+                        print("✓ Backend and UI are ready!")
+                        frontend_port = self.ui_client_port()
                         print(f"✓ Open the frontend at http://localhost:{frontend_port}")
                         print("=" * 50 + "\n")
 
@@ -147,6 +158,17 @@ class ProcessManager:
         print(f"ERROR: Frontend directory not found at {frontend_dir}")
         print("The UI is expected to live inside agent-langgraph/e2e-chatbot-app-next.")
         return None
+
+    def ui_server_port(self) -> int:
+        return int(os.environ.get("CHAT_APP_SERVER_PORT", "3001"))
+
+    def ui_client_port(self) -> int:
+        return int(
+            os.environ.get(
+                "CHAT_APP_CLIENT_PORT",
+                os.environ.get("CHAT_APP_PORT", os.environ.get("PORT", "3002")),
+            )
+        )
 
     def start_process(self, cmd, name, log_file, patterns, cwd=None):
         print(f"Starting {name}...")
@@ -200,11 +222,15 @@ class ProcessManager:
                 print("WARNING: Failed to locate frontend. Continuing with backend only.")
                 self.no_ui = True
             else:
-                frontend_port = int(
-                    os.environ.get("CHAT_APP_PORT", os.environ.get("PORT", "3002"))
-                )
+                ui_server_port = self.ui_server_port()
+                ui_client_port = self.ui_client_port()
                 os.environ["API_PROXY"] = f"http://localhost:{self.port}/invocations"
-                os.environ["CHAT_APP_SERVER_PORT"] = str(frontend_port)
+                os.environ.setdefault("LOCAL_AUTH_BYPASS", "true")
+                os.environ["CHAT_APP_SERVER_PORT"] = str(ui_server_port)
+                os.environ["CHAT_APP_CLIENT_PORT"] = str(ui_client_port)
+                os.environ.setdefault(
+                    "CHAT_APP_CORS_ORIGIN", f"http://localhost:{ui_client_port}"
+                )
 
         # Open log files
         self.backend_log = open("backend.log", "w", buffering=1)
@@ -223,21 +249,21 @@ class ProcessManager:
             )
 
             if not self.no_ui:
-                # Setup and start frontend
-                for cmd, desc in [("npm install", "install"), ("npm run build", "build")]:
-                    print(f"Running npm {desc}...")
+                node_modules_dir = frontend_dir / "node_modules"
+                if not node_modules_dir.exists():
+                    print("Installing UI dependencies...")
                     result = subprocess.run(
-                        cmd.split(), cwd=frontend_dir, capture_output=True, text=True
+                        ["npm", "install"], cwd=frontend_dir, capture_output=True, text=True
                     )
                     if result.returncode != 0:
-                        print(f"npm {desc} failed: {result.stderr}")
+                        print(f"npm install failed: {result.stderr}")
                         return 1
 
                 self.frontend_process = self.start_process(
-                    ["npm", "run", "start"],
+                    ["npm", "run", "dev"],
                     "frontend",
                     self.frontend_log,
-                    FRONTEND_READY,
+                    [],
                     cwd=frontend_dir,
                 )
 
