@@ -14,6 +14,12 @@ interface ModelConfig {
   availableModels: string[];
 }
 
+interface StorageConfig {
+  agentRoot: string;
+  conversationMemoryDbPath: string;
+  localChatHistoryPath: string;
+}
+
 interface ConfigResponse {
   features: {
     chatHistory: boolean;
@@ -21,6 +27,7 @@ interface ConfigResponse {
   };
   repo: RepoConfig;
   models: ModelConfig;
+  storage: StorageConfig;
   obo?: {
     missingScopes: string[];
   };
@@ -36,6 +43,7 @@ interface AppConfigContextType {
   repo: RepoConfig | undefined;
   hasRepoConfigured: boolean;
   models: ModelConfig | undefined;
+  storage: StorageConfig | undefined;
   setRepoPath: (path: string | null) => Promise<void>;
 }
 
@@ -87,6 +95,7 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     repo: data?.repo,
     hasRepoConfigured: !!data?.repo?.path,
     models: data?.models,
+    storage: data?.storage,
     setRepoPath,
   };
 

@@ -23,6 +23,10 @@ function resolveStorePath() {
     : path.resolve(path.dirname(DEFAULT_STORE_PATH), configured);
 }
 
+export function getLocalChatHistoryPath() {
+  return resolveStorePath();
+}
+
 function ensureParent(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }

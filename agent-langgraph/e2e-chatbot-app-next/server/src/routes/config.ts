@@ -11,9 +11,15 @@ import {
   getLocalRepoConfig,
   setLocalRepoConfig,
 } from '../lib/local-repo-store';
-import { getLocalAgentModelConfig } from '../lib/local-agent-config';
+import {
+  getLocalAgentModelConfig,
+  getLocalAgentStorageConfig,
+} from '../lib/local-agent-config';
 import { pickFolder } from '../lib/folder-picker';
-import { isLocalChatHistoryEnabled } from '../lib/local-chat-store';
+import {
+  getLocalChatHistoryPath,
+  isLocalChatHistoryEnabled,
+} from '../lib/local-chat-store';
 import {
   getSharedProfile,
   saveSharedProfile,
@@ -48,6 +54,7 @@ configRouter.get('/', async (req: Request, res: Response) => {
   const oboInfo = await getEndpointOboInfo();
   const repo = getLocalRepoConfig();
   const models = getLocalAgentModelConfig();
+  const storage = getLocalAgentStorageConfig();
 
   let missingScopes = oboInfo.endpointRequiredScopes;
 
@@ -70,6 +77,11 @@ configRouter.get('/', async (req: Request, res: Response) => {
     },
     repo,
     models,
+    storage: {
+      agentRoot: storage.agentRoot,
+      conversationMemoryDbPath: storage.conversationMemoryDbPath,
+      localChatHistoryPath: getLocalChatHistoryPath(),
+    },
     obo: {
       missingScopes,
     },

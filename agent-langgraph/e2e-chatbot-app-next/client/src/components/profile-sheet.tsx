@@ -68,7 +68,7 @@ export function ProfileSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { repo } = useAppConfig();
+  const { repo, storage } = useAppConfig();
   const [scope, setScope] = useState<ProfileScope>('global');
   const [profile, setProfile] = useState<ProfileDocument>(EMPTY_PROFILE);
   const [draftEntries, setDraftEntries] = useState<ProfileEntry[]>([]);
@@ -223,6 +223,35 @@ export function ProfileSheet({
                   {repo.name}
                 </Badge>
               ) : null}
+            </div>
+            <div className="mt-4 space-y-2 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-xs text-white/55">
+              <div className="font-medium uppercase tracking-[0.14em] text-white/42">
+                Local Storage
+              </div>
+              <div>
+                Conversation memory DB:
+                <div className="mt-1 break-all font-mono text-white/72">
+                  {storage?.conversationMemoryDbPath ?? 'Unavailable'}
+                </div>
+              </div>
+              <div>
+                Chat history store:
+                <div className="mt-1 break-all font-mono text-white/72">
+                  {storage?.localChatHistoryPath ?? 'Unavailable'}
+                </div>
+              </div>
+              <div>
+                Agent repo root:
+                <div className="mt-1 break-all font-mono text-white/72">
+                  {storage?.agentRoot ?? 'Unavailable'}
+                </div>
+              </div>
+              <div>
+                Current profile path:
+                <div className="mt-1 break-all font-mono text-white/72">
+                  {profile.path ?? 'Unavailable'}
+                </div>
+              </div>
             </div>
           </div>
 

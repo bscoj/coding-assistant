@@ -11,11 +11,16 @@ export type LocalAgentModelConfig = {
   availableModels: string[];
 };
 
-function resolveAgentRoot() {
+export type LocalAgentStorageConfig = {
+  agentRoot: string;
+  conversationMemoryDbPath: string;
+};
+
+export function resolveAgentRoot() {
   return path.resolve(process.env.LOCAL_AGENT_REPO_ROOT || DEFAULT_AGENT_ROOT);
 }
 
-function readEnvFile(filePath: string) {
+export function readEnvFile(filePath: string) {
   if (!fs.existsSync(filePath)) {
     return {} as Record<string, string>;
   }
@@ -31,6 +36,23 @@ function readEnvFile(filePath: string) {
     values[key.trim()] = rest.join('=').trim().replace(/^['"]|['"]$/g, '');
   }
   return values;
+}
+
+export function getLocalAgentStorageConfig(): LocalAgentStorageConfig {
+  const agentRoot = resolveAgentRoot();
+  const envValues = {
+    ...readEnvFile(path.join(agentRoot, '.env.example')),
+    ...readEnvFile(path.join(agentRoot, '.env')),
+  };
+  const configuredDbPath = envValues.MEMORY_DB_PATH || '.local/conversation_memory.db';
+  const conversationMemoryDbPath = path.isAbsolute(configuredDbPath)
+    ? configuredDbPath
+    : path.resolve(agentRoot, configuredDbPath);
+
+  return {
+    agentRoot,
+    conversationMemoryDbPath,
+  };
 }
 
 function parseList(raw: string | undefined | null) {

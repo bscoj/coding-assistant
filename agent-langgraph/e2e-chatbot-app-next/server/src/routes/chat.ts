@@ -119,7 +119,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       id,
       message,
       selectedChatModel,
-      selectedVisibilityType,
+      selectedVisibilityType: _selectedVisibilityType,
     }: {
       id: string;
       message?: ChatMessage;
@@ -153,7 +153,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
           id,
           userId: session.user.id,
           title: 'New chat',
-          visibility: selectedVisibilityType,
+          visibility: 'private',
           createdAt: new Date(),
           lastContext: null,
         };
@@ -605,23 +605,36 @@ chatRouter.patch(
   [requireAuth, requireChatAccess],
   async (req: Request, res: Response) => {
     try {
-      const id = getIdFromRequest(req);
-      if (!id) return;
-      const { visibility } = req.body;
-
-      if (!visibility || !['public', 'private'].includes(visibility)) {
-        return res.status(400).json({ error: 'Invalid visibility type' });
-      }
-
-      if (shouldUseLocalHistory(isDatabaseAvailable())) {
-        await updateLocalChatVisiblityById({ chatId: id, visibility });
-      } else {
-        await updateChatVisiblityById({ chatId: id, visibility });
-      }
-      res.json({ success: true });
+      res.status(403).json({ error: 'Chat sharing is disabled in this app' });
     } catch (error) {
       console.error('Error updating visibility:', error);
       res.status(500).json({ error: 'Failed to update visibility' });
+    }
+  },
+);
+
+chatRouter.patch(
+  '/:id/title',
+  [requireAuth, requireChatAccess],
+  async (req: Request, res: Response) => {
+    try {
+      const id = getIdFromRequest(req);
+      if (!id) return;
+      const title = String(req.body?.title ?? '').trim();
+
+      if (!title) {
+        return res.status(400).json({ error: 'Title is required' });
+      }
+
+      if (shouldUseLocalHistory(isDatabaseAvailable())) {
+        await updateLocalChatTitleById({ chatId: id, title });
+      } else {
+        await updateChatTitleById({ chatId: id, title });
+      }
+      res.json({ success: true, title });
+    } catch (error) {
+      console.error('Error updating title:', error);
+      res.status(500).json({ error: 'Failed to update title' });
     }
   },
 );

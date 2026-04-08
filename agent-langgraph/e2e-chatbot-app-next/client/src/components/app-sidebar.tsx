@@ -52,7 +52,7 @@ export function AppSidebar({
             className="flex items-center overflow-hidden px-1"
           >
             <span className="text-sm font-medium tracking-[0.16em] text-white/88 uppercase">
-              Codex
+              Coding Buddy
             </span>
           </Link>
         )}

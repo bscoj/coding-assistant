@@ -251,6 +251,17 @@ export function SidebarHistory({ user }: { user?: ClientUser | null }) {
                             key={chat.id}
                             chat={chat}
                             isActive={chat.id === id}
+                            onRename={(chatId, title) => {
+                              mutate((chatHistories) => {
+                                if (!chatHistories) return chatHistories;
+                                return chatHistories.map((chatHistory) => ({
+                                  ...chatHistory,
+                                  chats: chatHistory.chats.map((entry) =>
+                                    entry.id === chatId ? { ...entry, title } : entry,
+                                  ),
+                                }));
+                              }, false);
+                            }}
                             onDelete={(chatId) => {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);
@@ -271,6 +282,17 @@ export function SidebarHistory({ user }: { user?: ClientUser | null }) {
                             key={chat.id}
                             chat={chat}
                             isActive={chat.id === id}
+                            onRename={(chatId, title) => {
+                              mutate((chatHistories) => {
+                                if (!chatHistories) return chatHistories;
+                                return chatHistories.map((chatHistory) => ({
+                                  ...chatHistory,
+                                  chats: chatHistory.chats.map((entry) =>
+                                    entry.id === chatId ? { ...entry, title } : entry,
+                                  ),
+                                }));
+                              }, false);
+                            }}
                             onDelete={(chatId) => {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);
@@ -291,6 +313,17 @@ export function SidebarHistory({ user }: { user?: ClientUser | null }) {
                             key={chat.id}
                             chat={chat}
                             isActive={chat.id === id}
+                            onRename={(chatId, title) => {
+                              mutate((chatHistories) => {
+                                if (!chatHistories) return chatHistories;
+                                return chatHistories.map((chatHistory) => ({
+                                  ...chatHistory,
+                                  chats: chatHistory.chats.map((entry) =>
+                                    entry.id === chatId ? { ...entry, title } : entry,
+                                  ),
+                                }));
+                              }, false);
+                            }}
                             onDelete={(chatId) => {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);
@@ -311,6 +344,17 @@ export function SidebarHistory({ user }: { user?: ClientUser | null }) {
                             key={chat.id}
                             chat={chat}
                             isActive={chat.id === id}
+                            onRename={(chatId, title) => {
+                              mutate((chatHistories) => {
+                                if (!chatHistories) return chatHistories;
+                                return chatHistories.map((chatHistory) => ({
+                                  ...chatHistory,
+                                  chats: chatHistory.chats.map((entry) =>
+                                    entry.id === chatId ? { ...entry, title } : entry,
+                                  ),
+                                }));
+                              }, false);
+                            }}
                             onDelete={(chatId) => {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);
@@ -331,6 +375,17 @@ export function SidebarHistory({ user }: { user?: ClientUser | null }) {
                             key={chat.id}
                             chat={chat}
                             isActive={chat.id === id}
+                            onRename={(chatId, title) => {
+                              mutate((chatHistories) => {
+                                if (!chatHistories) return chatHistories;
+                                return chatHistories.map((chatHistory) => ({
+                                  ...chatHistory,
+                                  chats: chatHistory.chats.map((entry) =>
+                                    entry.id === chatId ? { ...entry, title } : entry,
+                                  ),
+                                }));
+                              }, false);
+                            }}
                             onDelete={(chatId) => {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);

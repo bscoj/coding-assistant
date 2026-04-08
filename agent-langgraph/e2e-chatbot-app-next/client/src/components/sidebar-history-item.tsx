@@ -9,32 +9,25 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuPortal,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { memo } from 'react';
-import { useChatVisibility } from '@/hooks/use-chat-visibility';
-import { OverflowIcon, CheckIcon, ShareIcon, TrashIcon } from './icons';
+import { updateChatTitle } from '@/lib/actions';
+import { OverflowIcon, PencilIcon, TrashIcon } from './icons';
 
 const PureChatItem = ({
   chat,
   isActive,
   onDelete,
+  onRename,
   setOpenMobile,
 }: {
   chat: Chat;
   isActive: boolean;
   onDelete: (chatId: string) => void;
+  onRename: (chatId: string, title: string) => void;
   setOpenMobile: (open: boolean) => void;
 }) => {
-  const { visibilityType, setVisibilityType } = useChatVisibility({
-    chatId: chat.id,
-    initialVisibilityType: chat.visibility,
-  });
-
   return (
     <SidebarMenuItem data-testid="chat-history-item" className="mb-1">
       <SidebarMenuButton asChild isActive={isActive}>
@@ -56,38 +49,21 @@ const PureChatItem = ({
         </DropdownMenuTrigger>
 
         <DropdownMenuContent side="bottom" align="end">
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="cursor-pointer">
-              <ShareIcon />
-              <span>Share</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuPortal>
-              <DropdownMenuSubContent>
-                <DropdownMenuItem
-                  className="cursor-pointer flex-row justify-between"
-                  onClick={() => {
-                    setVisibilityType('private');
-                  }}
-                >
-                  <div className="flex flex-row items-center gap-2">
-                    {visibilityType === 'private' ? <CheckIcon /> : <div className="size-4" />}
-                    <span>Private</span>
-                  </div>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="cursor-pointer flex-row justify-between"
-                  onClick={() => {
-                    setVisibilityType('public');
-                  }}
-                >
-                  <div className="flex flex-row items-center gap-2">
-                    {visibilityType === 'public' ? <CheckIcon /> : <div className="size-4" />}
-                    <span>Public</span>
-                  </div>
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuPortal>
-          </DropdownMenuSub>
+          <DropdownMenuItem
+            className="cursor-pointer"
+            onSelect={async () => {
+              const current = chat.title || 'Untitled chat';
+              const nextTitle = window.prompt('Rename chat', current)?.trim();
+              if (!nextTitle || nextTitle === current) {
+                return;
+              }
+              await updateChatTitle({ chatId: chat.id, title: nextTitle });
+              onRename(chat.id, nextTitle);
+            }}
+          >
+            <PencilIcon />
+            <span>Rename</span>
+          </DropdownMenuItem>
 
           <DropdownMenuItem
             className="cursor-pointer text-destructive focus:bg-destructive/15 focus:text-destructive dark:text-red-500"
@@ -105,6 +81,5 @@ const PureChatItem = ({
 export const ChatItem = memo(PureChatItem, (prevProps, nextProps) => {
   if (prevProps.isActive !== nextProps.isActive) return false;
   if (prevProps.chat.title !== nextProps.chat.title) return false;
-  if (prevProps.chat.visibility !== nextProps.chat.visibility) return false;
   return true;
 });
