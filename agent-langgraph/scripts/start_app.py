@@ -56,6 +56,7 @@ def check_port_available(port: int) -> bool:
 
 class ProcessManager:
     def __init__(self, port=8000, no_ui=False):
+        self.repo_root = Path(__file__).resolve().parent.parent
         self.backend_process = None
         self.frontend_process = None
         self.backend_ready = False
@@ -163,7 +164,7 @@ class ProcessManager:
             self.failed.set()
 
     def resolve_frontend_dir(self):
-        frontend_dir = Path(__file__).resolve().parent.parent / "e2e-chatbot-app-next"
+        frontend_dir = self.repo_root / "e2e-chatbot-app-next"
         if frontend_dir.exists():
             return frontend_dir
 
@@ -245,9 +246,11 @@ class ProcessManager:
                 )
 
         # Open log files
-        self.backend_log = open("backend.log", "w", buffering=1)
+        backend_log_path = self.repo_root / "backend.log"
+        frontend_log_path = self.repo_root / "frontend.log"
+        self.backend_log = open(backend_log_path, "w", buffering=1)
         if not self.no_ui:
-            self.frontend_log = open("frontend.log", "w", buffering=1)
+            self.frontend_log = open(frontend_log_path, "w", buffering=1)
 
         try:
             # Build backend command, passing through all arguments
@@ -257,7 +260,11 @@ class ProcessManager:
 
             # Start backend
             self.backend_process = self.start_process(
-                backend_cmd, "backend", self.backend_log, BACKEND_READY
+                backend_cmd,
+                "backend",
+                self.backend_log,
+                BACKEND_READY,
+                cwd=self.repo_root,
             )
 
             if not self.no_ui:
@@ -314,14 +321,21 @@ class ProcessManager:
             print(
                 f"\n{'=' * 42}\nERROR: {failed_name} process exited with code {exit_code}\n{'=' * 42}"
             )
-            self.print_logs("backend.log")
+            self.print_logs(str(backend_log_path))
             if not self.no_ui:
-                self.print_logs("frontend.log")
+                self.print_logs(str(frontend_log_path))
             return exit_code
 
         except KeyboardInterrupt:
             print("\nInterrupted")
             return 0
+
+        except Exception as exc:
+            print(f"\nLauncher error: {exc}")
+            import traceback
+
+            traceback.print_exc()
+            return 1
 
         finally:
             self.cleanup()
