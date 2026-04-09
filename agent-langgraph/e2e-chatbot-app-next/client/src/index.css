@@ -266,6 +266,52 @@
   --action-danger-primary-background-press: #fbd0d8;
 }
 
+.codex-response pre,
+.codex-response pre code {
+  background: #111318 !important;
+  color: #f8fafc !important;
+}
+
+.codex-response pre code span,
+.codex-response pre code .token {
+  color: inherit !important;
+}
+
+.codex-response pre code .token.comment,
+.codex-response pre code .token.prolog,
+.codex-response pre code .token.doctype,
+.codex-response pre code .token.cdata {
+  color: #8b98ad !important;
+}
+
+.codex-response pre code .token.keyword,
+.codex-response pre code .token.atrule {
+  color: #93c5fd !important;
+}
+
+.codex-response pre code .token.function,
+.codex-response pre code .token.class-name {
+  color: #fcd34d !important;
+}
+
+.codex-response pre code .token.string,
+.codex-response pre code .token.attr-value,
+.codex-response pre code .token.selector {
+  color: #86efac !important;
+}
+
+.codex-response pre code .token.number,
+.codex-response pre code .token.boolean,
+.codex-response pre code .token.constant,
+.codex-response pre code .token.symbol {
+  color: #f9a8d4 !important;
+}
+
+.codex-response pre code .token.operator,
+.codex-response pre code .token.punctuation {
+  color: #d7dee9 !important;
+}
+
 /* define theme */
 @theme {
   --font-sans: var(--font-standard);
