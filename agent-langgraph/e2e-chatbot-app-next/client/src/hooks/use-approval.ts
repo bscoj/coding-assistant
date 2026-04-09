@@ -9,7 +9,7 @@ interface ApprovalSubmission {
 }
 
 interface UseApprovalOptions {
-  addToolOutput: UseChatHelpers<ChatMessage>['addToolOutput'];
+  setMessages: UseChatHelpers<ChatMessage>['setMessages'];
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
 }
 
@@ -21,7 +21,7 @@ interface UseApprovalOptions {
  * 2. Calls sendMessage() without arguments to trigger continuation (for approvals only)
  */
 export function useApproval({
-  addToolOutput,
+  setMessages,
   sendMessage,
 }: UseApprovalOptions) {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -35,21 +35,54 @@ export function useApproval({
       setPendingApprovalId(approvalRequestId);
 
       try {
-        // Encode approvals as tool outputs for compatibility with OpenAI-like
-        // responses backends, which can reject dedicated approval-response items.
-        await addToolOutput({
-          tool: toolName,
-          toolCallId: approvalRequestId,
-          output: {
-            __approvalStatus__: approve,
-          },
-        });
+        setMessages((currentMessages) =>
+          currentMessages.map((message) => {
+            if (message.role !== 'assistant') {
+              return message;
+            }
+
+            let changed = false;
+            const parts = message.parts.map((part) => {
+              if (
+                part.type !== 'dynamic-tool' ||
+                part.toolCallId !== approvalRequestId ||
+                part.toolName !== toolName
+              ) {
+                return part;
+              }
+
+              changed = true;
+
+              if (approve) {
+                return {
+                  ...part,
+                  state: 'approval-responded' as const,
+                  output: undefined,
+                  approval: {
+                    id: approvalRequestId,
+                    approved: true,
+                  },
+                };
+              }
+
+              return {
+                ...part,
+                state: 'output-denied' as const,
+                output: undefined,
+                approval: {
+                  id: approvalRequestId,
+                  approved: false,
+                },
+              };
+            });
+
+            return changed ? { ...message, parts } : message;
+          }),
+        );
 
         // Only trigger continuation for approvals
-        // For denials, the AI SDK state is updated and we don't need server response
+        // For denials, the UI state is updated and we don't need server response
         if (approve) {
-          // Trigger continuation by calling sendMessage without arguments
-          // This will submit the current messages (including tool approval) without adding a new user message
           await sendMessage();
         }
       } catch (error) {
@@ -59,7 +92,7 @@ export function useApproval({
         setPendingApprovalId(null);
       }
     },
-    [addToolOutput, sendMessage],
+    [sendMessage, setMessages],
   );
 
   return {

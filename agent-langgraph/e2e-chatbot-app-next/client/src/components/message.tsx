@@ -68,7 +68,7 @@ const PurePreviewMessage = ({
 
   // Hook for handling MCP approval requests
   const { submitApproval, isSubmitting, pendingApprovalId } = useApproval({
-    addToolOutput,
+    setMessages,
     sendMessage,
   });
 
