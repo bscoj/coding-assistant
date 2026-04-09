@@ -272,11 +272,6 @@
   color: #f8fafc !important;
 }
 
-.codex-response pre code span,
-.codex-response pre code .token {
-  color: inherit !important;
-}
-
 .codex-response pre code .token.comment,
 .codex-response pre code .token.prolog,
 .codex-response pre code .token.doctype,

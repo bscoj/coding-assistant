@@ -271,7 +271,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     );
     const previousMessages = useClientMessages
       ? normalizedPreviousMessages
-      : convertToUIMessages(messagesFromDb);
+      : normalizeLegacyApprovalParts(convertToUIMessages(messagesFromDb));
 
     // If message is provided, add it to the list and save it
     // If not (continuation/regeneration), just use previous messages
@@ -350,7 +350,9 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     const streamId = generateUUID();
 
     const model = await myProvider.languageModel(selectedChatModel);
-    const modelMessages = await convertToModelMessages(uiMessages);
+    const modelMessages = await convertToModelMessages(uiMessages, {
+      ignoreIncompleteToolCalls: true,
+    });
     const repo = getLocalRepoConfig();
     const requestHeaders = {
       [CONTEXT_HEADER_CONVERSATION_ID]: id,
