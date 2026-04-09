@@ -81,6 +81,61 @@ const streamCache = new StreamCache();
 // Apply auth middleware to all chat routes
 chatRouter.use(authMiddleware);
 
+function normalizeLegacyApprovalParts(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => {
+    if (message.role !== 'assistant' || !Array.isArray(message.parts)) {
+      return message;
+    }
+
+    let changed = false;
+    const parts = message.parts.map((part) => {
+      if (
+        part?.type !== 'dynamic-tool' ||
+        part?.state !== 'output-available' ||
+        !part?.output ||
+        typeof part.output !== 'object' ||
+        !('__approvalStatus__' in part.output)
+      ) {
+        return part;
+      }
+
+      changed = true;
+      const approved = Boolean((part.output as { __approvalStatus__?: unknown }).__approvalStatus__);
+      const approvalId =
+        part.approval?.id ??
+        (typeof part.toolCallId === 'string' ? part.toolCallId : undefined);
+
+      if (!approvalId) {
+        return part;
+      }
+
+      if (!approved) {
+        return {
+          ...part,
+          state: 'output-denied' as const,
+          output: undefined,
+          approval: {
+            id: approvalId,
+            approved: false,
+          },
+        };
+      }
+
+      return {
+        ...part,
+        state: 'approval-responded' as const,
+        output: undefined,
+        approval: {
+          id: approvalId,
+          approved: true,
+        },
+      };
+    });
+
+    return changed ? { ...message, parts } : message;
+  });
+}
+
 function shouldUseLocalHistory(dbAvailable: boolean) {
   return !dbAvailable && isLocalChatHistoryEnabled();
 }
@@ -211,8 +266,11 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     // 2. Continuation request (no message) - tool results only exist client-side
     const useClientMessages =
       !dbAvailable || (!message && requestBody.previousMessages);
+    const normalizedPreviousMessages = normalizeLegacyApprovalParts(
+      requestBody.previousMessages ?? [],
+    );
     const previousMessages = useClientMessages
-      ? (requestBody.previousMessages ?? [])
+      ? normalizedPreviousMessages
       : convertToUIMessages(messagesFromDb);
 
     // If message is provided, add it to the list and save it
@@ -240,8 +298,8 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
 
       // For continuations with database enabled, save any updated assistant messages
       // This ensures tool-result parts (like MCP approval responses) are persisted
-      if ((dbAvailable || shouldUseLocalHistory(dbAvailable)) && requestBody.previousMessages) {
-        const assistantMessages = requestBody.previousMessages.filter(
+      if ((dbAvailable || shouldUseLocalHistory(dbAvailable)) && normalizedPreviousMessages.length > 0) {
+        const assistantMessages = normalizedPreviousMessages.filter(
           (m: ChatMessage) => m.role === 'assistant',
         );
         if (assistantMessages.length > 0) {
@@ -265,7 +323,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
           // Check if this is an MCP denial - if so, we're done (no need to call LLM)
           // Denial is indicated by a dynamic-tool part with state 'output-denied'
           // or with approval.approved === false
-          const hasMcpDenial = requestBody.previousMessages?.some(
+          const hasMcpDenial = normalizedPreviousMessages.some(
             (m: ChatMessage) =>
               m.parts?.some(
                 (p) =>
