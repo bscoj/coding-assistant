@@ -115,6 +115,9 @@ def _extract_assistant_text(item: dict[str, Any]) -> str | None:
 
 def model_safe_item(item: dict[str, Any]) -> dict[str, Any] | None:
     role = item.get("role")
+    if role not in {"system", "user", "assistant"}:
+        return None
+
     if role == "tool":
         return None
 
