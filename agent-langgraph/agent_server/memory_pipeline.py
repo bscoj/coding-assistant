@@ -106,6 +106,35 @@ def item_text(item: dict[str, Any]) -> str:
     return json.dumps(content if content is not None else item, ensure_ascii=True)
 
 
+def _extract_assistant_text(item: dict[str, Any]) -> str | None:
+    text = item_text(item).strip()
+    if not text or text == "tool call":
+        return None
+    return text
+
+
+def model_safe_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    role = item.get("role")
+    if role == "tool":
+        return None
+
+    if role == "assistant":
+        # Do not replay raw tool protocol messages back into the chat-completions
+        # model. OpenAI-compatible providers require strict assistant/tool ordering,
+        # and persisted tool-call history can violate that ordering across turns.
+        if item.get("tool_calls"):
+            text = _extract_assistant_text(item)
+            if not text:
+                return None
+            return {"role": "assistant", "content": text}
+
+        text = _extract_assistant_text(item)
+        if text is not None:
+            return {"role": "assistant", "content": text}
+
+    return item
+
+
 def render_messages(messages: list[StoredMessage]) -> str:
     rendered: list[str] = []
     for msg in messages:
@@ -137,11 +166,21 @@ def build_optimized_messages(
     current_items = [normalize_item(item) for item in request_input]
     system_items = [item for item in current_items if item.get("role") == "system"]
     if state is not None:
-        recent_items = [
-            json.loads(msg.content_json) for msg in state.recent_messages if msg.role != "system"
-        ]
+        recent_items = []
+        for msg in state.recent_messages:
+            if msg.role == "system":
+                continue
+            safe_item = model_safe_item(json.loads(msg.content_json))
+            if safe_item is not None:
+                recent_items.append(safe_item)
     else:
-        recent_items = [item for item in current_items if item.get("role") != "system"]
+        recent_items = []
+        for item in current_items:
+            if item.get("role") == "system":
+                continue
+            safe_item = model_safe_item(item)
+            if safe_item is not None:
+                recent_items.append(safe_item)
 
     optimized: list[dict[str, Any]] = [item for item in system_items]
     if user_profile_block:
