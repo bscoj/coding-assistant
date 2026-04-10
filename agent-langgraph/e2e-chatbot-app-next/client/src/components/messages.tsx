@@ -9,6 +9,7 @@ import { Conversation, ConversationContent } from './elements/conversation';
 import { ArrowDownIcon } from 'lucide-react';
 
 interface MessagesProps {
+  chatId: string;
   status: UseChatHelpers<ChatMessage>['status'];
   messages: ChatMessage[];
   setMessages: UseChatHelpers<ChatMessage>['setMessages'];
@@ -21,6 +22,7 @@ interface MessagesProps {
 }
 
 function PureMessages({
+  chatId,
   status,
   messages,
   setMessages,
@@ -68,6 +70,7 @@ function PureMessages({
           {messages.map((message, index) => (
             <PreviewMessage
               key={message.id}
+              chatId={chatId}
               message={message}
               allMessages={messages}
               isLoading={
@@ -119,6 +122,7 @@ export const Messages = memo(PureMessages, (prevProps, nextProps) => {
   }
 
   if (prevProps.selectedModelId !== nextProps.selectedModelId) return false;
+  if (prevProps.chatId !== nextProps.chatId) return false;
   if (prevProps.messages.length !== nextProps.messages.length) return false;
   if (!equal(prevProps.messages, nextProps.messages)) return false;
   if (!equal(prevProps.feedback, nextProps.feedback)) return false;

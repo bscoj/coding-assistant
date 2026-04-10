@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import type { ChatMessage } from '@chat-template/core';
+import { fetchWithErrorHandlers } from '@/lib/utils';
 
 interface ApprovalSubmission {
   approvalRequestId: string;
@@ -9,8 +10,8 @@ interface ApprovalSubmission {
 }
 
 interface UseApprovalOptions {
+  chatId: string;
   setMessages: UseChatHelpers<ChatMessage>['setMessages'];
-  sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
 }
 
 /**
@@ -21,8 +22,8 @@ interface UseApprovalOptions {
  * 2. Calls sendMessage() without arguments to trigger continuation (for approvals only)
  */
 export function useApproval({
+  chatId,
   setMessages,
-  sendMessage,
 }: UseApprovalOptions) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(
@@ -35,8 +36,9 @@ export function useApproval({
       setPendingApprovalId(approvalRequestId);
 
       try {
+        let nextMessages: ChatMessage[] = [];
         setMessages((currentMessages) =>
-          currentMessages.map((message) => {
+          (nextMessages = currentMessages.map((message) => {
             if (message.role !== 'assistant') {
               return message;
             }
@@ -77,13 +79,24 @@ export function useApproval({
             });
 
             return changed ? { ...message, parts } : message;
-          }),
+          })),
         );
 
-        // Only trigger continuation for approvals
-        // For denials, the UI state is updated and we don't need server response
-        if (approve) {
-          await sendMessage();
+        const response = await fetchWithErrorHandlers(`/api/chat/${chatId}/approval`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            approvalRequestId,
+            approved: approve,
+            previousMessages: nextMessages,
+          }),
+        });
+
+        const payload = (await response.json()) as { message?: ChatMessage | null };
+        if (payload.message) {
+          setMessages((currentMessages) => [...currentMessages, payload.message as ChatMessage]);
         }
       } catch (error) {
         console.error('Approval submission failed:', error);
@@ -92,7 +105,7 @@ export function useApproval({
         setPendingApprovalId(null);
       }
     },
-    [sendMessage, setMessages],
+    [chatId, setMessages],
   );
 
   return {

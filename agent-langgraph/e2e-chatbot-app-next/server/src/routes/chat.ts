@@ -140,6 +140,38 @@ function shouldUseLocalHistory(dbAvailable: boolean) {
   return !dbAvailable && isLocalChatHistoryEnabled();
 }
 
+function extractAssistantTextFromResponsesOutput(output: unknown): string {
+  if (!Array.isArray(output)) {
+    return '';
+  }
+
+  const parts: string[] = [];
+  for (const item of output) {
+    if (typeof item !== 'object' || item === null) {
+      continue;
+    }
+    if ((item as { role?: string }).role !== 'assistant') {
+      continue;
+    }
+    const content = (item as { content?: unknown[] }).content;
+    if (!Array.isArray(content)) {
+      continue;
+    }
+    for (const chunk of content) {
+      if (
+        typeof chunk === 'object' &&
+        chunk !== null &&
+        (chunk as { type?: string }).type === 'output_text' &&
+        typeof (chunk as { text?: string }).text === 'string'
+      ) {
+        parts.push((chunk as { text: string }).text);
+      }
+    }
+  }
+
+  return parts.join('').trim();
+}
+
 /**
  * POST /api/chat - Send a message and get streaming response
  *
@@ -530,6 +562,159 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     const response = chatError.toResponse();
     return res.status(response.status).json(response.json);
   }
+});
+
+chatRouter.post('/:id/approval', requireAuth, async (req: Request, res: Response) => {
+  const session = req.session;
+  if (!session) {
+    const error = new ChatSDKError('unauthorized:chat');
+    const response = error.toResponse();
+    return res.status(response.status).json(response.json);
+  }
+
+  const dbAvailable = isDatabaseAvailable();
+  const chatId = req.params.id;
+  const approvalRequestId = req.body?.approvalRequestId;
+  const approved = req.body?.approved;
+  const previousMessages = normalizeLegacyApprovalParts(
+    Array.isArray(req.body?.previousMessages) ? req.body.previousMessages : [],
+  );
+
+  if (typeof approvalRequestId !== 'string' || typeof approved !== 'boolean') {
+    return res.status(400).json({
+      code: 'bad_request:api',
+      cause: 'approvalRequestId and approved are required',
+    });
+  }
+
+  const { chat, allowed, reason } = shouldUseLocalHistory(dbAvailable)
+    ? await checkLocalChatAccess(chatId, session.user.id)
+    : await checkChatAccess(chatId, session.user.id);
+
+  if (reason !== 'not_found' && !allowed) {
+    const error = new ChatSDKError('forbidden:chat');
+    const response = error.toResponse();
+    return res.status(response.status).json(response.json);
+  }
+
+  if (!chat) {
+    return res.status(404).json({
+      code: 'not_found:chat',
+      cause: 'Chat not found',
+    });
+  }
+
+  if (chat.userId !== session.user.id) {
+    const error = new ChatSDKError('forbidden:chat');
+    const response = error.toResponse();
+    return res.status(response.status).json(response.json);
+  }
+
+  if (previousMessages.length > 0) {
+    const assistantMessages = previousMessages.filter(
+      (m: ChatMessage) => m.role === 'assistant',
+    );
+    if (assistantMessages.length > 0) {
+      const persistedMessages = assistantMessages.map((m: ChatMessage) => ({
+        chatId,
+        id: m.id,
+        role: m.role,
+        parts: m.parts,
+        attachments: [],
+        createdAt: m.metadata?.createdAt
+          ? new Date(m.metadata.createdAt)
+          : new Date(),
+        traceId: null,
+      }));
+
+      if (dbAvailable) {
+        await saveMessages({ messages: persistedMessages });
+      } else if (shouldUseLocalHistory(dbAvailable)) {
+        await saveLocalMessages(persistedMessages);
+      }
+    }
+  }
+
+  if (!approved) {
+    return res.status(200).json({ message: null });
+  }
+
+  const agentBackendUrl = process.env.API_PROXY;
+  if (!agentBackendUrl) {
+    return res.status(400).json({
+      code: 'bad_request:api',
+      cause: 'Approval continuation requires API_PROXY to be configured',
+    });
+  }
+
+  const agentResponse = await fetch(agentBackendUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(req.headers['x-forwarded-access-token']
+        ? {
+            'x-forwarded-access-token': req.headers[
+              'x-forwarded-access-token'
+            ] as string,
+          }
+        : {}),
+      ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
+    },
+    body: JSON.stringify({
+      input: [
+        {
+          type: 'mcp_approval_response',
+          id: approvalRequestId,
+          approve: true,
+        },
+      ],
+      context: {
+        conversation_id: chatId,
+        user_id: session.user.email ?? session.user.id,
+      },
+    }),
+  });
+
+  if (!agentResponse.ok) {
+    const errorText = await agentResponse.text();
+    return res.status(agentResponse.status).json({
+      code: 'bad_request:api',
+      cause: errorText || 'Approval continuation failed',
+    });
+  }
+
+  const agentPayload = (await agentResponse.json()) as { output?: unknown };
+  const text = extractAssistantTextFromResponsesOutput(agentPayload.output);
+  const assistantMessage: ChatMessage = {
+    id: generateUUID(),
+    role: 'assistant',
+    parts: text ? [{ type: 'text', text }] : [],
+    metadata: {
+      createdAt: new Date().toISOString(),
+    },
+  };
+
+  if (assistantMessage.parts.length > 0) {
+    const persistedResponse = {
+      id: assistantMessage.id,
+      role: assistantMessage.role,
+      parts: assistantMessage.parts,
+      createdAt: new Date(),
+      attachments: [],
+      chatId,
+      traceId: null,
+    };
+
+    if (dbAvailable) {
+      await saveMessages({
+        messages: [persistedResponse],
+      });
+    } else if (shouldUseLocalHistory(dbAvailable)) {
+      await saveLocalMessages([persistedResponse]);
+    }
+  }
+
+  return res.status(200).json({ message: assistantMessage });
 });
 
 /**

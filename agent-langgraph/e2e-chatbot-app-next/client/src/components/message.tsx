@@ -41,6 +41,7 @@ import { useApproval } from '@/hooks/use-approval';
 import { LocalFilesReview } from './local-files-review';
 
 const PurePreviewMessage = ({
+  chatId,
   message,
   allMessages,
   isLoading,
@@ -52,6 +53,7 @@ const PurePreviewMessage = ({
   requiresScrollPadding,
   initialFeedback,
 }: {
+  chatId: string;
   message: ChatMessage;
   allMessages: ChatMessage[];
   isLoading: boolean;
@@ -68,8 +70,8 @@ const PurePreviewMessage = ({
 
   // Hook for handling MCP approval requests
   const { submitApproval, isSubmitting, pendingApprovalId } = useApproval({
+    chatId,
     setMessages,
-    sendMessage,
   });
 
   const attachmentsFromMessage = message.parts.filter(

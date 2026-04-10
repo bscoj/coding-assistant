@@ -334,6 +334,7 @@ export function Chat({
           />
 
           <Messages
+            chatId={id}
             status={status}
             messages={messages}
             setMessages={setMessages}
