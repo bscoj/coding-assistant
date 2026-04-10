@@ -49,6 +49,22 @@ litellm.suppress_debug_info = True
 sp_workspace_client = WorkspaceClient()
 
 
+def current_turn_items(request_items: list[dict]) -> list[dict]:
+    approval_items = [
+        item
+        for item in request_items
+        if item.get("type") in {"mcp_approval_response", "function_call_output"}
+    ]
+    if approval_items:
+        return approval_items
+
+    user_items = [item for item in request_items if item.get("role") == "user"]
+    if user_items:
+        return [user_items[-1]]
+
+    return request_items
+
+
 def agent_model_endpoint() -> str:
     requested = get_request_headers().get("x-codex-model-endpoint")
     available = available_agent_model_endpoints()
@@ -112,10 +128,11 @@ async def stream_handler(
     request: ResponsesAgentRequest,
 ) -> AsyncGenerator[ResponsesAgentStreamEvent, None]:
     request_items = [i.model_dump() for i in request.input]
+    turn_items = current_turn_items(request_items)
     current_workspace_root = str(workspace_root())
     user_profile_block = "\n\n".join(build_profile_blocks(current_workspace_root)) or None
     conversation_id = get_session_id(request)
-    approval_request_id, approval_approved = detect_approval_response(request_items)
+    approval_request_id, approval_approved = detect_approval_response(turn_items)
     if approval_request_id and approval_approved is True:
         text = apply_staged_write_by_approval_id(approval_request_id)
         output_item = assistant_text_output_item(text)
@@ -131,18 +148,18 @@ async def stream_handler(
     if conversation_id:
         mlflow.update_current_trace(metadata={"mlflow.trace.session": conversation_id})
         store = get_memory_store()
-        store.save_messages(conversation_id, request_items)
+        store.save_messages(conversation_id, turn_items)
         memory_state = store.load_memory_state(
             conversation_id, recent_messages_limit=recent_messages_limit()
         )
         optimized_input = build_optimized_messages(
-            request_items,
+            turn_items,
             memory_state,
             user_profile_block=user_profile_block,
         )
     else:
         optimized_input = build_optimized_messages(
-            request_items,
+            turn_items,
             state=None,
             user_profile_block=user_profile_block,
         )
@@ -174,7 +191,7 @@ async def stream_handler(
         if output_items:
             try:
                 await maybe_refresh_user_profiles(
-                    request_items + assistant_outputs_to_items(output_items),
+                    turn_items + assistant_outputs_to_items(output_items),
                     current_workspace_root,
                 )
             except Exception:
