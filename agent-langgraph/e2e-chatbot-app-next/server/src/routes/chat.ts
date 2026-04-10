@@ -893,6 +893,7 @@ async function generateTitleFromUserMessage({
   maxMessageLength?: number;
 }) {
   const model = await myProvider.languageModel('title-model');
+  const fallbackTitle = fallbackTitleFromMessage(message, maxMessageLength);
 
   // Truncate each text part to the maxMessageLength
   const truncatedMessage = {
@@ -907,14 +908,86 @@ async function generateTitleFromUserMessage({
   const { text: title } = await generateText({
     model,
     system: `\n
-    - you will generate a short title based on the first message a user begins a conversation with
-    - ensure it is not more than 80 characters long
-    - the title should be a summary of the user's message
-    - do not use quotes or colons. do not include other expository content ("I'll help...")`,
+    - generate a short, neutral chat title based on the user's first message
+    - respond with title text only
+    - do not write as the assistant or continue the conversation
+    - do not use quotes, ellipses, colons, emojis, or sentence fragments like "Nah, it's not..."
+    - prefer a concise noun phrase or task summary
+    - use title case when natural
+    - keep it under 48 characters and at most 6 words`,
     prompt: JSON.stringify(truncatedMessage),
   });
 
-  return title;
+  return normalizeGeneratedTitle(title, fallbackTitle);
+}
+
+function fallbackTitleFromMessage(
+  message: ChatMessage,
+  maxMessageLength: number,
+): string {
+  const text = message.parts
+    .filter((part): part is Extract<(typeof message.parts)[number], { type: 'text' }> => part.type === 'text')
+    .map((part) => part.text)
+    .join(' ')
+    .slice(0, maxMessageLength)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!text) return 'New chat';
+
+  const cleaned = text
+    .replace(/^[`"'\s]+|[`"'\s]+$/g, '')
+    .replace(/^(hey|hi|hello|nah|no|yes|yep|okay|ok|please)\b[,\s-]*/i, '')
+    .replace(/^(can you|could you|would you|help me|i need to|i want to|let'?s)\b[,\s-]*/i, '')
+    .replace(/[.?!].*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const source = cleaned || text;
+  const words = source.split(/\s+/).filter(Boolean).slice(0, 6);
+  const compact = words.join(' ');
+  const normalized = compact
+    .replace(/[^a-zA-Z0-9/&()+\- ]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return truncatePreserveWords(toTitleCase(normalized || 'New chat'), 48);
+}
+
+function normalizeGeneratedTitle(title: string, fallbackTitle: string): string {
+  const compact = title
+    .replace(/\s+/g, ' ')
+    .replace(/^[`"'“”'‘’\s]+|[`"'“”'‘’\s]+$/g, '')
+    .trim();
+
+  if (!compact) return fallbackTitle;
+
+  const firstLine = compact.split('\n')[0]?.trim() ?? '';
+  const cleaned = firstLine
+    .replace(/^[`"'“”'‘’]+|[`"'“”'‘’]+$/g, '')
+    .replace(/\.\.\.+/g, '')
+    .replace(/[:;]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const looksConversational =
+    /^(nah|no|yes|yep|okay|ok|sure|i can|i will|i'll|let me|here'?s|this repo|that repo)\b/i.test(
+      cleaned,
+    ) || /[.!?]$/.test(cleaned);
+
+  const tooLong = cleaned.length > 48 || cleaned.split(/\s+/).length > 8;
+
+  if (!cleaned || looksConversational || tooLong) {
+    return fallbackTitle;
+  }
+
+  return truncatePreserveWords(cleaned, 48);
+}
+
+function toTitleCase(input: string): string {
+  return input.replace(/\b([a-z])([a-z]*)/gi, (_, head: string, tail: string) => {
+    return head.toUpperCase() + tail.toLowerCase();
+  });
 }
 
 function truncatePreserveWords(input: string, maxLength: number): string {
