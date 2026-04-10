@@ -664,7 +664,7 @@ chatRouter.post('/:id/approval', requireAuth, async (req: Request, res: Response
       input: [
         {
           type: 'mcp_approval_response',
-          id: approvalRequestId,
+          approval_request_id: approvalRequestId,
           approve: true,
         },
       ],

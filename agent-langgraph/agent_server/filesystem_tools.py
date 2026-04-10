@@ -261,7 +261,7 @@ def detect_approval_response(request_messages: list[dict] | None) -> tuple[str |
     for item in request_messages:
         item_type = item.get("type")
         if item_type == "mcp_approval_response":
-            request_id = item.get("id") or item.get("call_id")
+            request_id = item.get("approval_request_id") or item.get("id") or item.get("call_id")
             approved = item.get("approve")
             if isinstance(request_id, str) and isinstance(approved, bool):
                 return request_id, approved
@@ -490,6 +490,7 @@ def stage_file_write(
             {
                 "path": rel_path,
                 "mode": mode,
+                "content": content,
                 "preview": preview,
             }
         ],
@@ -542,6 +543,7 @@ def stage_patch_edit(
             {
                 "path": rel_path,
                 "mode": "patch",
+                "content": new_text,
                 "preview": preview,
             }
         ],
@@ -608,7 +610,15 @@ def stage_change_plan(changes_json: str, summary: str = "Grouped file changes") 
         operation_id=operation_id,
         tool_name="change_plan",
         summary=summary,
-        changes=[{"path": change["path"], "mode": change["mode"], "preview": change["preview"]} for change in changes],
+        changes=[
+            {
+                "path": change["path"],
+                "mode": change["mode"],
+                "content": change["content"],
+                "preview": change["preview"],
+            }
+            for change in changes
+        ],
     )
 
 

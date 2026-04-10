@@ -1,9 +1,11 @@
 import { Badge } from '@/components/ui/badge';
+import { CodeBlock } from './elements/code-block';
 
 type Change = {
   path?: string;
   mode?: string;
   preview?: string;
+  content?: string;
 };
 
 type LocalFilesReviewProps = {
@@ -80,11 +82,37 @@ export function LocalFilesReview({ input }: LocalFilesReviewProps) {
               {(change.mode ?? 'change').toUpperCase()}
             </Badge>
           </div>
-          <pre className="max-h-72 overflow-auto rounded-xl border border-white/[0.06] bg-[#0d1117] p-3 text-xs leading-5 whitespace-pre-wrap text-white/82">
-            {typeof change.preview === 'string' && change.preview.length > 0
-              ? change.preview
-              : 'No diff preview available.'}
-          </pre>
+          {typeof change.content === 'string' && change.content.length > 0 ? (
+            <div className="space-y-2">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-white/38">
+                Proposed content
+              </div>
+              <div className="overflow-hidden rounded-xl border border-white/[0.06]">
+                <CodeBlock
+                  code={change.content}
+                  language={
+                    typeof change.path === 'string' && change.path.includes('.')
+                      ? change.path.split('.').pop() || 'text'
+                      : 'text'
+                  }
+                />
+              </div>
+            </div>
+          ) : null}
+          {typeof change.preview === 'string' && change.preview.length > 0 ? (
+            <div className="space-y-2">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-white/38">
+                Diff preview
+              </div>
+              <pre className="max-h-72 overflow-auto rounded-xl border border-white/[0.06] bg-[#0d1117] p-3 text-xs leading-5 whitespace-pre-wrap text-white/82">
+                {change.preview}
+              </pre>
+            </div>
+          ) : typeof change.content !== 'string' || change.content.length === 0 ? (
+            <pre className="max-h-72 overflow-auto rounded-xl border border-white/[0.06] bg-[#0d1117] p-3 text-xs leading-5 whitespace-pre-wrap text-white/82">
+              No diff preview available.
+            </pre>
+          ) : null}
         </div>
       ))}
     </div>
