@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import uuid
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import unified_diff
@@ -42,9 +43,15 @@ def staged_write_store_path() -> Path:
 
 
 def workspace_index_path() -> Path:
-    path = Path(os.getenv("FILES_WORKSPACE_INDEX_PATH", str(PROJECT_ROOT / ".local" / "workspace_index.json")))
-    if not path.is_absolute():
-        path = (PROJECT_ROOT / path).resolve()
+    configured = Path(os.getenv("FILES_WORKSPACE_INDEX_PATH", str(PROJECT_ROOT / ".local" / "workspace_index.json")))
+    if not configured.is_absolute():
+        configured = (PROJECT_ROOT / configured).resolve()
+
+    root = workspace_root()
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    stem = configured.stem or "workspace_index"
+    suffix = configured.suffix or ".json"
+    path = configured.with_name(f"{stem}-{digest}{suffix}")
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -197,12 +204,15 @@ def _scan_workspace(root: Path) -> dict:
 
 def build_workspace_index(force_refresh: bool = False) -> dict:
     path = workspace_index_path()
+    current_root = str(workspace_root())
     if path.exists() and not force_refresh:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            if cached.get("root") == current_root:
+                return cached
         except json.JSONDecodeError:
             pass
-    index = _scan_workspace(workspace_root())
+    index = _scan_workspace(Path(current_root))
     path.write_text(json.dumps(index, ensure_ascii=True, indent=2), encoding="utf-8")
     return index
 
