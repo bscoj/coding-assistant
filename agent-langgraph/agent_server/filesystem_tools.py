@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import unified_diff
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.tools import tool
 from mlflow.genai.agent_server import get_request_headers
@@ -42,6 +42,14 @@ def staged_write_store_path() -> Path:
     return path
 
 
+def file_read_cache_path() -> Path:
+    path = Path(os.getenv("FILES_READ_CACHE_PATH", str(PROJECT_ROOT / ".local" / "file_read_cache.json")))
+    if not path.is_absolute():
+        path = (PROJECT_ROOT / path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def workspace_index_path() -> Path:
     configured = Path(os.getenv("FILES_WORKSPACE_INDEX_PATH", str(PROJECT_ROOT / ".local" / "workspace_index.json")))
     if not configured.is_absolute():
@@ -62,6 +70,10 @@ def max_read_bytes() -> int:
 
 def max_search_results() -> int:
     return int(os.getenv("FILES_MAX_SEARCH_RESULTS", "50"))
+
+
+def max_indexed_files() -> int:
+    return int(os.getenv("FILES_MAX_INDEXED_FILES", "25000"))
 
 
 def writes_enabled() -> bool:
@@ -154,11 +166,139 @@ def _save_staged_writes(data: dict[str, dict]) -> None:
     )
 
 
+def _load_file_read_cache() -> dict[str, Any]:
+    path = file_read_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_file_read_cache(data: dict[str, Any]) -> None:
+    file_read_cache_path().write_text(
+        json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
+    )
+
+
+def _conversation_scope_id() -> str:
+    headers = get_request_headers()
+    return (
+        headers.get("x-databricks-conversation-id")
+        or headers.get("x-codex-conversation-id")
+        or "default"
+    )
+
+
+def _read_cache_key(path: Path, start_line: int, end_line: int) -> str:
+    scope = _conversation_scope_id()
+    root = str(workspace_root())
+    digest = hashlib.sha256(
+        f"{scope}:{root}:{path}:{start_line}:{end_line}".encode("utf-8")
+    ).hexdigest()[:24]
+    return digest
+
+
+def _lookup_cached_read(path: Path, start_line: int, end_line: int) -> dict[str, Any] | None:
+    cache = _load_file_read_cache()
+    key = _read_cache_key(path, start_line, end_line)
+    record = cache.get(key)
+    if not isinstance(record, dict):
+        return None
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    if (
+        record.get("mtime_ns") != stat.st_mtime_ns
+        or record.get("size") != stat.st_size
+        or record.get("scope") != _conversation_scope_id()
+        or record.get("workspace_root") != str(workspace_root())
+    ):
+        return None
+    return record
+
+
+def _remember_file_read(
+    path: Path,
+    start_line: int,
+    end_line: int,
+    line_count: int,
+    content: str,
+) -> None:
+    cache = _load_file_read_cache()
+    key = _read_cache_key(path, start_line, end_line)
+    stat = path.stat()
+    cache[key] = {
+        "scope": _conversation_scope_id(),
+        "workspace_root": str(workspace_root()),
+        "path": str(path.relative_to(workspace_root())),
+        "start_line": start_line,
+        "end_line": end_line,
+        "line_count": line_count,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()[:16],
+        "last_read_at": utc_now(),
+    }
+    if len(cache) > 500:
+        items = sorted(
+            (
+                (cache_key, value)
+                for cache_key, value in cache.items()
+                if isinstance(value, dict)
+            ),
+            key=lambda item: item[1].get("last_read_at", ""),
+        )
+        cache = {cache_key: cache[cache_key] for cache_key, _ in items[-400:]}
+    _save_file_read_cache(cache)
+
+
+def _cached_read_message(record: dict[str, Any]) -> str:
+    return (
+        f"Already read {record['path']} lines {record['start_line']}-{record['end_line']} "
+        f"in this conversation. Reuse that context instead of rereading unless you need "
+        "different lines or suspect the file changed. "
+        f"Cached snippet: {record['line_count']} lines, content hash {record['content_sha256']}."
+    )
+
+
+def _recent_reads(limit: int = 12) -> list[dict[str, Any]]:
+    scope = _conversation_scope_id()
+    current_root = str(workspace_root())
+    cache = _load_file_read_cache()
+    records = [
+        value
+        for value in cache.values()
+        if isinstance(value, dict)
+        and value.get("scope") == scope
+        and value.get("workspace_root") == current_root
+    ]
+    records.sort(key=lambda item: item.get("last_read_at", ""), reverse=True)
+    return records[:limit]
+
+
 def _scan_workspace(root: Path) -> dict:
     files: list[dict] = []
     extensions: dict[str, int] = {}
     top_dirs: dict[str, int] = {}
     important_files: list[str] = []
+    indexed_limit = max_indexed_files()
+    skipped_dirs = {
+        ".git",
+        ".venv",
+        "node_modules",
+        "dist",
+        "build",
+        ".next",
+        "coverage",
+        ".mypy_cache",
+        ".pytest_cache",
+        "__pycache__",
+        "target",
+        ".turbo",
+    }
     important_names = {
         "package.json",
         "pyproject.toml",
@@ -171,30 +311,41 @@ def _scan_workspace(root: Path) -> dict:
         "tsconfig.json",
         "databricks.yml",
     }
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root)
-        if any(part.startswith(".git") or part == "node_modules" or part == ".venv" for part in rel.parts):
-            continue
-        ext = path.suffix.lower() or "[no_ext]"
-        extensions[ext] = extensions.get(ext, 0) + 1
-        top = rel.parts[0] if rel.parts else "."
-        top_dirs[top] = top_dirs.get(top, 0) + 1
-        if path.name in important_names:
-            important_files.append(str(rel))
-        files.append(
-            {
-                "path": str(rel),
-                "name": path.name,
-                "extension": ext,
-                "size": path.stat().st_size,
-            }
-        )
+    truncated = False
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if dirname not in skipped_dirs and not dirname.startswith(".git")
+        ]
+        current_dir = Path(dirpath)
+        for filename in filenames:
+            path = current_dir / filename
+            rel = path.relative_to(root)
+            ext = path.suffix.lower() or "[no_ext]"
+            extensions[ext] = extensions.get(ext, 0) + 1
+            top = rel.parts[0] if rel.parts else "."
+            top_dirs[top] = top_dirs.get(top, 0) + 1
+            if path.name in important_names:
+                important_files.append(str(rel))
+            files.append(
+                {
+                    "path": str(rel),
+                    "name": path.name,
+                    "extension": ext,
+                    "size": path.stat().st_size,
+                }
+            )
+            if len(files) >= indexed_limit:
+                truncated = True
+                break
+        if truncated:
+            break
     return {
         "generated_at": utc_now(),
         "root": str(root),
         "file_count": len(files),
+        "truncated": truncated,
         "extensions": dict(sorted(extensions.items(), key=lambda item: (-item[1], item[0]))[:20]),
         "top_level_dirs": dict(sorted(top_dirs.items(), key=lambda item: (-item[1], item[0]))[:20]),
         "important_files": sorted(important_files)[:50],
@@ -379,6 +530,7 @@ def workspace_overview(force_refresh: bool = False) -> str:
         "root": index["root"],
         "generated_at": index["generated_at"],
         "file_count": index["file_count"],
+        "truncated": index.get("truncated", False),
         "extensions": index["extensions"],
         "top_level_dirs": index["top_level_dirs"],
         "important_files": index["important_files"][:20],
@@ -397,6 +549,21 @@ def find_files_by_name(query: str, limit: int = 20) -> str:
         if needle in file_info["path"].lower() or needle in file_info["name"].lower()
     ]
     return "\n".join(matches[:limit]) if matches else "No matching files found."
+
+
+@tool
+def recent_file_reads(limit: int = 12) -> str:
+    """Show recently read file ranges for this conversation so you can reuse them instead of rereading."""
+    records = _recent_reads(limit=max(1, min(limit, 50)))
+    if not records:
+        return "No file ranges have been read yet in this conversation."
+    lines = []
+    for record in records:
+        lines.append(
+            f"{record['path']} lines {record['start_line']}-{record['end_line']} "
+            f"(read {record['last_read_at']}, hash {record['content_sha256']})"
+        )
+    return "\n".join(lines)
 
 
 @tool
@@ -438,20 +605,26 @@ def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
 
 
 @tool
-def read_file(path: str, start_line: int = 1, end_line: int = 200) -> str:
-    """Read a text file within the workspace root."""
+def read_file(path: str, start_line: int = 1, end_line: int = 200, force_reread: bool = False) -> str:
+    """Read a text file within the workspace root. Avoid rereading the same range unless you need different lines or set force_reread=true."""
     target = _resolve_path(path)
     if not target.exists():
         return f"File not found: {target}"
     if target.is_dir():
         return f"Path is a directory, not a file: {target}"
+    if not force_reread:
+        cached = _lookup_cached_read(target, start_line, end_line)
+        if cached is not None:
+            return _cached_read_message(cached)
     text = _read_text(target)
     lines = text.splitlines()
     start = max(start_line, 1)
     end = min(max(end_line, start), len(lines))
     snippet = lines[start - 1 : end]
     numbered = [f"{i}: {line}" for i, line in enumerate(snippet, start=start)]
-    return "\n".join(numbered) or "(empty file)"
+    output = "\n".join(numbered) or "(empty file)"
+    _remember_file_read(target, start, end, len(snippet), output)
+    return output
 
 
 @tool
@@ -693,6 +866,7 @@ def apply_staged_write_by_approval_id(operation_id: str) -> str:
 FILESYSTEM_TOOLS = [
     workspace_overview,
     find_files_by_name,
+    recent_file_reads,
     list_files,
     search_files,
     read_file,

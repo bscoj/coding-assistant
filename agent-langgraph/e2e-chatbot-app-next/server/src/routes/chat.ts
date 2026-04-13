@@ -478,7 +478,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
           traceId = fallbackResult?.traceId ?? null;
         }
         if (titlePromise) {
-          const generatedTitle = await titlePromise;
+          const generatedTitle = await resolveTitleQuickly(titlePromise);
           if (generatedTitle) {
             writer.write({ type: 'data-title', data: generatedTitle });
           }
@@ -988,6 +988,18 @@ function toTitleCase(input: string): string {
   return input.replace(/\b([a-z])([a-z]*)/gi, (_, head: string, tail: string) => {
     return head.toUpperCase() + tail.toLowerCase();
   });
+}
+
+async function resolveTitleQuickly(
+  titlePromise: Promise<string | null>,
+  timeoutMs = 600,
+): Promise<string | null> {
+  return Promise.race<string | null>([
+    titlePromise,
+    new Promise<string | null>((resolve) => {
+      setTimeout(() => resolve(null), timeoutMs);
+    }),
+  ]);
 }
 
 function truncatePreserveWords(input: string, maxLength: number): string {

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from datetime import datetime
@@ -47,6 +48,18 @@ mlflow.langchain.autolog()
 logging.getLogger("mlflow.utils.autologging_utils").setLevel(logging.ERROR)
 litellm.suppress_debug_info = True
 sp_workspace_client = WorkspaceClient()
+
+
+def _run_background(coro: asyncio.Future | asyncio.coroutines) -> None:
+    task = asyncio.create_task(coro)
+
+    def _log_failure(done_task: asyncio.Task) -> None:
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("Background task failed.")
+
+    task.add_done_callback(_log_failure)
 
 
 def current_turn_items(request_items: list[dict]) -> list[dict]:
@@ -185,16 +198,21 @@ async def stream_handler(
                 get_memory_store().save_messages(
                     conversation_id, assistant_outputs_to_items(output_items)
                 )
-                await maybe_refresh_memory(conversation_id)
             except Exception:
                 logger.exception("Failed to persist or refresh conversation memory.")
+            else:
+                _run_background(maybe_refresh_memory(conversation_id))
         if output_items:
             try:
-                await maybe_refresh_user_profiles(
-                    turn_items + assistant_outputs_to_items(output_items),
-                    current_workspace_root,
-                )
+                interaction_items = turn_items + assistant_outputs_to_items(output_items)
             except Exception:
                 logger.exception("Failed to refresh persistent user profile.")
+            else:
+                _run_background(
+                    maybe_refresh_user_profiles(
+                        interaction_items,
+                        current_workspace_root,
+                    )
+                )
     finally:
         clear_filesystem_tool_context()
