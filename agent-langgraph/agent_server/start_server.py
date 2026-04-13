@@ -62,3 +62,7 @@ def main():
     _print_user_profile_banner()
     _print_filesystem_banner()
     agent_server.run(app_import_string="agent_server.start_server:app")
+
+
+if __name__ == "__main__":
+    main()

@@ -43,8 +43,8 @@ def npm_command() -> str:
 def backend_command() -> list[str]:
     return [
         sys.executable,
-        "-c",
-        "from agent_server.start_server import main; main()",
+        "-m",
+        "agent_server.start_server",
     ]
 
 
