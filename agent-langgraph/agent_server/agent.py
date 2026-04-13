@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Awaitable, Optional
 
 import litellm
 import mlflow
@@ -50,7 +50,7 @@ litellm.suppress_debug_info = True
 sp_workspace_client = WorkspaceClient()
 
 
-def _run_background(coro: asyncio.Future | asyncio.coroutines) -> None:
+def _run_background(coro: Awaitable[object]) -> None:
     task = asyncio.create_task(coro)
 
     def _log_failure(done_task: asyncio.Task) -> None:
