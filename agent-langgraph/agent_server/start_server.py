@@ -47,7 +47,7 @@ def _print_filesystem_banner() -> None:
     print("Filesystem tools:")
     print(f"  workspace_root: {workspace_root()}")
     print(f"  writes_enabled: {writes_enabled()}")
-    print("  write_approval_prefix: APPROVE_WRITE:<operation_id>")
+    print("  write_approval_flow: UI allow/deny controls")
 
 agent_server = AgentServer("ResponsesAgent", enable_chat_proxy=True)
 

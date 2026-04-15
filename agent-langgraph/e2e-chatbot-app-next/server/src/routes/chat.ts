@@ -575,15 +575,20 @@ chatRouter.post('/:id/approval', requireAuth, async (req: Request, res: Response
   const dbAvailable = isDatabaseAvailable();
   const chatId = req.params.id;
   const approvalRequestId = req.body?.approvalRequestId;
+  const approvalRequestIds = Array.isArray(req.body?.approvalRequestIds)
+    ? req.body.approvalRequestIds.filter((value: unknown): value is string => typeof value === 'string')
+    : typeof approvalRequestId === 'string'
+      ? [approvalRequestId]
+      : [];
   const approved = req.body?.approved;
   const previousMessages = normalizeLegacyApprovalParts(
     Array.isArray(req.body?.previousMessages) ? req.body.previousMessages : [],
   );
 
-  if (typeof approvalRequestId !== 'string' || typeof approved !== 'boolean') {
+  if (approvalRequestIds.length === 0 || typeof approved !== 'boolean') {
     return res.status(400).json({
       code: 'bad_request:api',
-      cause: 'approvalRequestId and approved are required',
+      cause: 'approvalRequestIds and approved are required',
     });
   }
 
@@ -647,44 +652,60 @@ chatRouter.post('/:id/approval', requireAuth, async (req: Request, res: Response
     });
   }
 
-  const agentResponse = await fetch(agentBackendUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(req.headers['x-forwarded-access-token']
-        ? {
-            'x-forwarded-access-token': req.headers[
-              'x-forwarded-access-token'
-            ] as string,
-          }
-        : {}),
-      ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
-    },
-    body: JSON.stringify({
-      input: [
-        {
-          type: 'mcp_approval_response',
-          approval_request_id: approvalRequestId,
-          approve: true,
-        },
-      ],
-      context: {
-        conversation_id: chatId,
-        user_id: session.user.email ?? session.user.id,
-      },
-    }),
-  });
+  const repo = getLocalRepoConfig();
 
-  if (!agentResponse.ok) {
-    const errorText = await agentResponse.text();
-    return res.status(agentResponse.status).json({
-      code: 'bad_request:api',
-      cause: errorText || 'Approval continuation failed',
+  const sharedHeaders = {
+    'Content-Type': 'application/json',
+    ...(repo.path
+      ? { 'x-codex-workspace-root': repo.path }
+      : {}),
+    ...(req.headers['x-forwarded-access-token']
+      ? {
+          'x-forwarded-access-token': req.headers[
+            'x-forwarded-access-token'
+          ] as string,
+        }
+      : {}),
+    ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
+  };
+
+  const responseTexts: string[] = [];
+
+  for (const requestId of approvalRequestIds) {
+    const agentResponse = await fetch(agentBackendUrl, {
+      method: 'POST',
+      headers: sharedHeaders,
+      body: JSON.stringify({
+        input: [
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: requestId,
+            approve: true,
+          },
+        ],
+        context: {
+          conversation_id: chatId,
+          user_id: session.user.email ?? session.user.id,
+        },
+      }),
     });
+
+    if (!agentResponse.ok) {
+      const errorText = await agentResponse.text();
+      return res.status(agentResponse.status).json({
+        code: 'bad_request:api',
+        cause: errorText || 'Approval continuation failed',
+      });
+    }
+
+    const agentPayload = (await agentResponse.json()) as { output?: unknown };
+    const text = extractAssistantTextFromResponsesOutput(agentPayload.output);
+    if (text) {
+      responseTexts.push(text);
+    }
   }
 
-  const agentPayload = (await agentResponse.json()) as { output?: unknown };
-  const text = extractAssistantTextFromResponsesOutput(agentPayload.output);
+  const text = responseTexts.join('\n\n');
   const assistantMessage: ChatMessage = {
     id: generateUUID(),
     role: 'assistant',

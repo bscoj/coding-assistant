@@ -50,6 +50,14 @@ def file_read_cache_path() -> Path:
     return path
 
 
+def tool_activity_cache_path() -> Path:
+    path = Path(os.getenv("FILES_TOOL_ACTIVITY_PATH", str(PROJECT_ROOT / ".local" / "tool_activity.json")))
+    if not path.is_absolute():
+        path = (PROJECT_ROOT / path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def workspace_index_path() -> Path:
     configured = Path(os.getenv("FILES_WORKSPACE_INDEX_PATH", str(PROJECT_ROOT / ".local" / "workspace_index.json")))
     if not configured.is_absolute():
@@ -141,6 +149,17 @@ def _resolve_path(path: str) -> Path:
     return resolved
 
 
+def _resolve_path_with_root(path: str, root: Path) -> Path:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    normalized_root = root.resolve()
+    if resolved != normalized_root and normalized_root not in resolved.parents:
+        raise ValueError(f"Path {resolved} is outside workspace root {normalized_root}")
+    return resolved
+
+
 def _read_text(path: Path) -> str:
     size = path.stat().st_size
     if size > max_read_bytes():
@@ -182,6 +201,22 @@ def _save_file_read_cache(data: dict[str, Any]) -> None:
     )
 
 
+def _load_tool_activity_cache() -> dict[str, Any]:
+    path = tool_activity_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_tool_activity_cache(data: dict[str, Any]) -> None:
+    tool_activity_cache_path().write_text(
+        json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
+    )
+
+
 def _conversation_scope_id() -> str:
     headers = get_request_headers()
     return (
@@ -198,6 +233,12 @@ def _read_cache_key(path: Path, start_line: int, end_line: int) -> str:
         f"{scope}:{root}:{path}:{start_line}:{end_line}".encode("utf-8")
     ).hexdigest()[:24]
     return digest
+
+
+def _tool_activity_scope_key() -> str:
+    scope = _conversation_scope_id()
+    root = str(workspace_root())
+    return hashlib.sha256(f"{scope}:{root}".encode("utf-8")).hexdigest()[:24]
 
 
 def _lookup_cached_read(path: Path, start_line: int, end_line: int) -> dict[str, Any] | None:
@@ -277,6 +318,94 @@ def _recent_reads(limit: int = 12) -> list[dict[str, Any]]:
     ]
     records.sort(key=lambda item: item.get("last_read_at", ""), reverse=True)
     return records[:limit]
+
+
+def _record_tool_activity(kind: Literal["search", "code_search"], payload: dict[str, Any]) -> None:
+    cache = _load_tool_activity_cache()
+    scope_key = _tool_activity_scope_key()
+    bucket = cache.get(scope_key)
+    if not isinstance(bucket, dict):
+        bucket = {"searches": []}
+    searches = bucket.get("searches")
+    if not isinstance(searches, list):
+        searches = []
+    entry = {
+        "kind": kind,
+        "recorded_at": utc_now(),
+        **payload,
+    }
+    searches.append(entry)
+    bucket["searches"] = searches[-40:]
+    bucket["scope"] = _conversation_scope_id()
+    bucket["workspace_root"] = str(workspace_root())
+    cache[scope_key] = bucket
+    if len(cache) > 200:
+        items = sorted(
+            (
+                (cache_key, value)
+                for cache_key, value in cache.items()
+                if isinstance(value, dict)
+            ),
+            key=lambda item: max(
+                [search.get("recorded_at", "") for search in item[1].get("searches", [])]
+                or [""]
+            ),
+        )
+        cache = {cache_key: cache[cache_key] for cache_key, _ in items[-150:]}
+    _save_tool_activity_cache(cache)
+
+
+def _recent_searches(limit: int = 8) -> list[dict[str, Any]]:
+    cache = _load_tool_activity_cache()
+    bucket = cache.get(_tool_activity_scope_key())
+    if not isinstance(bucket, dict):
+        return []
+    searches = bucket.get("searches")
+    if not isinstance(searches, list):
+        return []
+    items = [item for item in searches if isinstance(item, dict)]
+    items.sort(key=lambda item: item.get("recorded_at", ""), reverse=True)
+    return items[:limit]
+
+
+def build_tool_memory_block() -> str | None:
+    recent_reads = _recent_reads(limit=6)
+    recent_search_items = _recent_searches(limit=6)
+    if not recent_reads and not recent_search_items:
+        return (
+            "Tool workflow guidance\n\n"
+            "Minimize redundant tool use. Before rereading files, prefer recent_file_reads(). "
+            "Start with workspace_overview(), then find_files_by_name(), then targeted search_files() "
+            "or search_code_blocks(). Avoid rereading the same file range unless you need different lines "
+            "or suspect the file changed."
+        )
+
+    sections = [
+        "Tool workflow guidance:\n"
+        "- Minimize redundant tool use.\n"
+        "- Prefer recent_file_reads() before rereading files.\n"
+        "- Prefer workspace_overview(), then find_files_by_name(), then targeted search_files() or search_code_blocks().\n"
+        "- Do not reread the same file range unless you need different lines or suspect the file changed."
+    ]
+    if recent_reads:
+        lines = [
+            f"- {item['path']} lines {item['start_line']}-{item['end_line']} (hash {item['content_sha256']})"
+            for item in recent_reads
+        ]
+        sections.append("Recent file reads:\n" + "\n".join(lines))
+    if recent_search_items:
+        lines = []
+        for item in recent_search_items:
+            details = item.get("query", "")
+            if item.get("path"):
+                details += f" in {item['path']}"
+            if item.get("glob"):
+                details += f" glob={item['glob']}"
+            if item.get("match_count") is not None:
+                details += f" matches={item['match_count']}"
+            lines.append(f"- {item.get('kind', 'search')}: {details.strip()}")
+        sections.append("Recent searches:\n" + "\n".join(lines))
+    return "Tool memory\n\n" + "\n\n".join(sections)
 
 
 def _scan_workspace(root: Path) -> dict:
@@ -476,6 +605,7 @@ def _make_diff(old_text: str, new_text: str, path_label: str) -> str:
 def _stage_operation(operation: dict) -> str:
     operation_id = f"write_{uuid.uuid4().hex[:12]}"
     staged = _load_staged_writes()
+    operation.setdefault("workspace_root", str(workspace_root()))
     staged[operation_id] = {
         **operation,
         "operation_id": operation_id,
@@ -487,6 +617,7 @@ def _stage_operation(operation: dict) -> str:
 
 def _build_marker(operation_id: str, tool_name: str, summary: str, changes: list[dict]) -> str:
     rationale = _latest_user_request_summary()
+    current_root = str(workspace_root())
     return json.dumps(
         {
             "type": STAGED_WRITE_MARKER,
@@ -496,7 +627,7 @@ def _build_marker(operation_id: str, tool_name: str, summary: str, changes: list
             "summary": summary,
             "rationale": rationale,
             "risk_level": _change_risk_level(changes),
-            "workspace_root": str(workspace_root()),
+            "workspace_root": current_root,
             "changes": changes,
             "instruction": "Requires explicit user approval before applying these file changes.",
         },
@@ -580,6 +711,16 @@ def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
             cmd.extend(["-g", normalized_glob])
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         output = result.stdout.strip()
+        match_count = len(output.splitlines()) if output else 0
+        _record_tool_activity(
+            "search",
+            {
+                "query": query,
+                "path": str(base.relative_to(workspace_root())) if base != workspace_root() else ".",
+                "glob": normalized_glob,
+                "match_count": match_count,
+            },
+        )
         if not output:
             return "No matches found."
         lines = output.splitlines()[: max_search_results()]
@@ -600,8 +741,104 @@ def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
                 rel = file_path.relative_to(workspace_root())
                 matches.append(f"{rel}:{idx}:{line}")
                 if len(matches) >= max_search_results():
+                    _record_tool_activity(
+                        "search",
+                        {
+                            "query": query,
+                            "path": str(base.relative_to(workspace_root())) if base != workspace_root() else ".",
+                            "glob": normalized_glob,
+                            "match_count": len(matches),
+                        },
+                    )
                     return "\n".join(matches)
+    _record_tool_activity(
+        "search",
+        {
+            "query": query,
+            "path": str(base.relative_to(workspace_root())) if base != workspace_root() else ".",
+            "glob": normalized_glob,
+            "match_count": len(matches),
+        },
+    )
     return "\n".join(matches) if matches else "No matches found."
+
+
+@tool
+def search_code_blocks(
+    query: str,
+    path: str = ".",
+    glob: str | None = None,
+    context_lines: int = 8,
+    max_matches: int = 8,
+) -> str:
+    """Search for keywords and return surrounding code blocks/snippets instead of full-file reads."""
+    base = _resolve_path(path)
+    normalized_glob = _normalize_glob(glob)
+    context = max(1, min(context_lines, 40))
+    max_hits = max(1, min(max_matches, 20))
+    if _is_overly_broad_glob(normalized_glob) and not _user_requested_repo_wide_search():
+        return _search_scope_error(normalized_glob)
+    rg = shutil.which("rg")
+    if rg:
+        cmd = [rg, "-n", "--hidden", "--glob", "!.git", "-C", str(context), query, str(base)]
+        if normalized_glob:
+            cmd.extend(["-g", normalized_glob])
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        output = result.stdout.strip()
+        blocks = output.split("\n--\n") if output else []
+        _record_tool_activity(
+            "code_search",
+            {
+                "query": query,
+                "path": str(base.relative_to(workspace_root())) if base != workspace_root() else ".",
+                "glob": normalized_glob,
+                "match_count": len(blocks),
+            },
+        )
+        if not output:
+            return "No matching code blocks found."
+        return "\n--\n".join(blocks[:max_hits])
+
+    blocks: list[str] = []
+    for file_path in sorted(base.rglob("*")):
+        if not file_path.is_file():
+            continue
+        if normalized_glob and not file_path.match(normalized_glob):
+            continue
+        try:
+            text = _read_text(file_path)
+        except Exception:
+            continue
+        lines = text.splitlines()
+        for idx, line in enumerate(lines, start=1):
+            if query not in line:
+                continue
+            start = max(1, idx - context)
+            end = min(len(lines), idx + context)
+            snippet = "\n".join(f"{line_no}: {lines[line_no - 1]}" for line_no in range(start, end + 1))
+            rel = file_path.relative_to(workspace_root())
+            blocks.append(f"{rel}:{idx}\n{snippet}")
+            if len(blocks) >= max_hits:
+                _record_tool_activity(
+                    "code_search",
+                    {
+                        "query": query,
+                        "path": str(base.relative_to(workspace_root())) if base != workspace_root() else ".",
+                        "glob": normalized_glob,
+                        "match_count": len(blocks),
+                    },
+                )
+                return "\n--\n".join(blocks)
+    _record_tool_activity(
+        "code_search",
+        {
+            "query": query,
+            "path": str(base.relative_to(workspace_root())) if base != workspace_root() else ".",
+            "glob": normalized_glob,
+            "match_count": len(blocks),
+        },
+    )
+    return "\n--\n".join(blocks) if blocks else "No matching code blocks found."
 
 
 @tool
@@ -655,9 +892,11 @@ def stage_file_write(
             "kind": "change_set",
             "tool_name": "write_file",
             "summary": f"{mode} {rel_path}",
+            "workspace_root": str(workspace_root()),
             "changes": [
                 {
                     "path": rel_path,
+                    "absolute_path": str(target),
                     "mode": mode,
                     "content": content,
                     "preview": preview,
@@ -708,9 +947,11 @@ def stage_patch_edit(
             "kind": "change_set",
             "tool_name": "patch_edit",
             "summary": f"Patch edit {rel_path}",
+            "workspace_root": str(workspace_root()),
             "changes": [
                 {
                     "path": rel_path,
+                    "absolute_path": str(target),
                     "mode": "patch",
                     "content": new_text,
                     "preview": preview,
@@ -749,7 +990,13 @@ def _prepare_change(change: dict) -> dict:
             raise ValueError(f"Cannot overwrite {rel_path}; file does not exist")
         current_text = _read_text(target) if exists and target.is_file() else ""
         preview = _make_diff(current_text, content, rel_path) or "(new file contents stored; no textual diff available)"
-        return {"path": rel_path, "mode": change_type, "content": content, "preview": preview}
+        return {
+            "path": rel_path,
+            "absolute_path": str(target),
+            "mode": change_type,
+            "content": content,
+            "preview": preview,
+        }
     if change_type == "patch":
         if not target.exists() or target.is_dir():
             raise ValueError(f"Cannot patch {rel_path}; file does not exist")
@@ -764,7 +1011,13 @@ def _prepare_change(change: dict) -> dict:
             raise ValueError(f"Search text appears {occurrences} times in {rel_path}; use replace_all or narrower text")
         new_text = current_text.replace(search_text, replace_text) if replace_all else current_text.replace(search_text, replace_text, 1)
         preview = _make_diff(current_text, new_text, rel_path)
-        return {"path": rel_path, "mode": "patch", "content": new_text, "preview": preview}
+        return {
+            "path": rel_path,
+            "absolute_path": str(target),
+            "mode": "patch",
+            "content": new_text,
+            "preview": preview,
+        }
     raise ValueError(f"Unsupported change type: {change_type}")
 
 
@@ -813,7 +1066,7 @@ def apply_staged_write(operation_id: str) -> str:
     if not _has_user_approval(operation_id):
         return (
             f"Write {operation_id} is not approved yet. "
-            f"Ask the user to reply with {APPROVAL_PREFIX}{operation_id}"
+            "Use the approval controls in the UI before applying these changes."
         )
     staged = _load_staged_writes()
     operation = staged.get(operation_id)
@@ -852,15 +1105,24 @@ def apply_staged_write_by_approval_id(operation_id: str) -> str:
     operation = staged.get(operation_id)
     if not operation:
         raise ValueError(f"No staged write found for {operation_id}")
+    operation_root = Path(str(operation.get("workspace_root") or workspace_root())).resolve()
     applied_paths: list[str] = []
     for change in operation.get("changes", []):
-        target = _resolve_path(change["path"])
+        absolute_path = str(change.get("absolute_path", "")).strip()
+        target = (
+            _resolve_path_with_root(absolute_path, operation_root)
+            if absolute_path
+            else _resolve_path_with_root(change["path"], operation_root)
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(change["content"], encoding="utf-8")
-        applied_paths.append(str(target.relative_to(workspace_root())))
+        applied_paths.append(str(target.relative_to(operation_root)))
     staged.pop(operation_id, None)
     _save_staged_writes(staged)
-    return f"Allowed. Applied file changes to: {', '.join(applied_paths)}"
+    return (
+        f"Allowed. Applied file changes in {operation_root} to: "
+        f"{', '.join(applied_paths)}"
+    )
 
 
 FILESYSTEM_TOOLS = [
@@ -869,6 +1131,7 @@ FILESYSTEM_TOOLS = [
     recent_file_reads,
     list_files,
     search_files,
+    search_code_blocks,
     read_file,
     stage_file_write,
     stage_patch_edit,

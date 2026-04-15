@@ -4,8 +4,8 @@ import type { ChatMessage } from '@chat-template/core';
 import { fetchWithErrorHandlers } from '@/lib/utils';
 
 interface ApprovalSubmission {
-  approvalRequestId: string;
-  toolName: string;
+  approvalRequestIds: string[];
+  toolNames: string[];
   approve: boolean;
 }
 
@@ -31,9 +31,10 @@ export function useApproval({
   );
 
   const submitApproval = useCallback(
-    async ({ approvalRequestId, toolName, approve }: ApprovalSubmission) => {
+    async ({ approvalRequestIds, toolNames, approve }: ApprovalSubmission) => {
+      const uniqueApprovalIds = Array.from(new Set(approvalRequestIds));
       setIsSubmitting(true);
-      setPendingApprovalId(approvalRequestId);
+      setPendingApprovalId(uniqueApprovalIds[0] ?? null);
 
       try {
         let nextMessages: ChatMessage[] = [];
@@ -47,8 +48,8 @@ export function useApproval({
             const parts = message.parts.map((part) => {
               if (
                 part.type !== 'dynamic-tool' ||
-                part.toolCallId !== approvalRequestId ||
-                part.toolName !== toolName
+                !uniqueApprovalIds.includes(part.toolCallId) ||
+                !toolNames.includes(part.toolName)
               ) {
                 return part;
               }
@@ -61,7 +62,7 @@ export function useApproval({
                   state: 'approval-responded' as const,
                   output: undefined,
                   approval: {
-                    id: approvalRequestId,
+                    id: part.toolCallId,
                     approved: true,
                   },
                 };
@@ -72,7 +73,7 @@ export function useApproval({
                 state: 'output-denied' as const,
                 output: undefined,
                 approval: {
-                  id: approvalRequestId,
+                  id: part.toolCallId,
                   approved: false,
                 },
               };
@@ -88,7 +89,7 @@ export function useApproval({
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            approvalRequestId,
+            approvalRequestIds: uniqueApprovalIds,
             approved: approve,
             previousMessages: nextMessages,
           }),

@@ -38,7 +38,10 @@ import { MessageOAuthError } from './message-oauth-error';
 import { isCredentialErrorMessage } from '@/lib/oauth-error-utils';
 import { Streamdown } from 'streamdown';
 import { useApproval } from '@/hooks/use-approval';
-import { LocalFilesReview } from './local-files-review';
+import {
+  LocalFilesReview,
+  type LocalFilesystemApprovalEntry,
+} from './local-files-review';
 
 const PurePreviewMessage = ({
   chatId,
@@ -116,6 +119,42 @@ const PurePreviewMessage = ({
     // Only consider non-OAuth errors for this check
     return errorParts.length > 0 && nonErrorParts.length === 0;
   }, [message.parts, errorParts.length]);
+
+  const localFilesystemApprovals = React.useMemo(() => {
+    const approvals: LocalFilesystemApprovalEntry[] = [];
+
+    for (const part of message.parts) {
+      if (part.type !== 'dynamic-tool') continue;
+      const approvalRequestId =
+        part.callProviderMetadata?.databricks?.approvalRequestId?.toString();
+      const mcpServerName =
+        part.callProviderMetadata?.databricks?.mcpServerName?.toString();
+      if (!approvalRequestId || mcpServerName !== 'local-filesystem') continue;
+
+      const approvalStatusFromOutput =
+        part.output &&
+        typeof part.output === 'object' &&
+        '__approvalStatus__' in part.output
+          ? (part.output as { __approvalStatus__?: unknown }).__approvalStatus__
+          : undefined;
+      const approved =
+        'approval' in part
+          ? part.approval?.approved
+          : typeof approvalStatusFromOutput === 'boolean'
+            ? approvalStatusFromOutput
+            : undefined;
+
+      approvals.push({
+        approvalRequestId,
+        toolName: part.toolName,
+        state: part.state,
+        approved,
+        input: part.input,
+      });
+    }
+
+    return approvals;
+  }, [message.parts]);
 
   return (
     <div
@@ -271,6 +310,9 @@ const PurePreviewMessage = ({
               if (isMcpApproval) {
                 const isLocalFilesystemApproval =
                   mcpServerName === 'local-filesystem';
+                if (isLocalFilesystemApproval) {
+                  return null;
+                }
                 return (
                   <McpTool
                     key={toolCallId}
@@ -283,24 +325,20 @@ const PurePreviewMessage = ({
                       approved={approved}
                     />
                     <McpToolContent>
-                      {isLocalFilesystemApproval ? (
-                        <LocalFilesReview input={input} />
-                      ) : (
-                        <McpToolInput input={input} />
-                      )}
+                      <McpToolInput input={input} />
                       {state === 'approval-requested' && (
                         <McpApprovalActions
                           onApprove={() =>
                             submitApproval({
-                              approvalRequestId: toolCallId,
-                              toolName,
+                              approvalRequestIds: [toolCallId],
+                              toolNames: [toolName],
                               approve: true,
                             })
                           }
                           onDeny={() =>
                             submitApproval({
-                              approvalRequestId: toolCallId,
-                              toolName,
+                              approvalRequestIds: [toolCallId],
+                              toolNames: [toolName],
                               approve: false,
                             })
                           }
@@ -391,6 +429,35 @@ const PurePreviewMessage = ({
               );
             }
           })}
+
+          {message.role === 'assistant' && localFilesystemApprovals.length > 0 ? (
+            <LocalFilesReview
+              approvals={localFilesystemApprovals}
+              isSubmitting={isSubmitting}
+              onApprove={() =>
+                submitApproval({
+                  approvalRequestIds: localFilesystemApprovals.map(
+                    (entry) => entry.approvalRequestId,
+                  ),
+                  toolNames: localFilesystemApprovals.map(
+                    (entry) => entry.toolName,
+                  ),
+                  approve: true,
+                })
+              }
+              onDeny={() =>
+                submitApproval({
+                  approvalRequestIds: localFilesystemApprovals.map(
+                    (entry) => entry.approvalRequestId,
+                  ),
+                  toolNames: localFilesystemApprovals.map(
+                    (entry) => entry.toolName,
+                  ),
+                  approve: false,
+                })
+              }
+            />
+          ) : null}
 
           {!isReadonly && !hasOnlyErrors && (
             <MessageActions

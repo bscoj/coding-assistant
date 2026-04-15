@@ -22,6 +22,7 @@ from mlflow.types.responses import (
 from agent_server.filesystem_tools import (
     FILESYSTEM_TOOLS,
     apply_staged_write_by_approval_id,
+    build_tool_memory_block,
     clear_filesystem_tool_context,
     detect_approval_response,
     set_filesystem_tool_context,
@@ -144,6 +145,7 @@ async def stream_handler(
     turn_items = current_turn_items(request_items)
     current_workspace_root = str(workspace_root())
     user_profile_block = "\n\n".join(build_profile_blocks(current_workspace_root)) or None
+    tool_memory_block = build_tool_memory_block()
     conversation_id = get_session_id(request)
     approval_request_id, approval_approved = detect_approval_response(turn_items)
     if approval_request_id and approval_approved is True:
@@ -169,12 +171,14 @@ async def stream_handler(
             turn_items,
             memory_state,
             user_profile_block=user_profile_block,
+            tool_memory_block=tool_memory_block,
         )
     else:
         optimized_input = build_optimized_messages(
             turn_items,
             state=None,
             user_profile_block=user_profile_block,
+            tool_memory_block=tool_memory_block,
         )
 
     # By default, uses service principal credentials.

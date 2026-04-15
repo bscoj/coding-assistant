@@ -165,6 +165,7 @@ def build_optimized_messages(
     request_input: list[Any],
     state: MemoryState | None = None,
     user_profile_block: str | None = None,
+    tool_memory_block: str | None = None,
 ) -> list[dict[str, Any]]:
     current_items = [normalize_item(item) for item in request_input]
     system_items = [item for item in current_items if item.get("role") == "system"]
@@ -188,6 +189,8 @@ def build_optimized_messages(
     optimized: list[dict[str, Any]] = [item for item in system_items]
     if user_profile_block:
         optimized.append({"role": "system", "content": user_profile_block})
+    if tool_memory_block:
+        optimized.append({"role": "system", "content": tool_memory_block})
     memory_block = build_memory_block(state) if state is not None else None
     if memory_block:
         optimized.append({"role": "system", "content": memory_block})
