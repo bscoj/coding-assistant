@@ -35,6 +35,7 @@ from agent_server.memory_pipeline import (
     recent_messages_limit,
 )
 from agent_server.memory_store import get_memory_store
+from agent_server.skills import build_skill_blocks
 from agent_server.user_profile import build_profile_blocks, maybe_refresh_user_profiles
 from agent_server.utils import (
     get_databricks_host_from_env,
@@ -49,6 +50,21 @@ mlflow.langchain.autolog()
 logging.getLogger("mlflow.utils.autologging_utils").setLevel(logging.ERROR)
 litellm.suppress_debug_info = True
 sp_workspace_client = WorkspaceClient()
+
+AGENT_SYSTEM_PROMPT = """You are Coding Buddy, a repo-aware coding assistant.
+
+Core behavior:
+- Be concise, practical, and accurate.
+- Prefer understanding the repo before proposing changes.
+- Minimize redundant tool use. Reuse recent file reads and targeted searches instead of rereading whole files.
+- Prefer workspace_overview(), find_files_by_name(), recent_file_reads(), targeted search_files(), and search_code_blocks() before broad reads.
+- Use injected skill blocks when they are present for task-specific workflows.
+- Do not assume a skill is active unless it was injected for the current request.
+
+File changes:
+- Use staged write tools for all file edits.
+- Never ask the user to type approval tokens manually. The UI provides Allow / Deny controls for file changes.
+"""
 
 
 def _run_background(coro: Awaitable[object]) -> None:
@@ -124,7 +140,11 @@ async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
     #       tools.extend(await mcp_client.get_tools())
     #   except Exception:
     #       logger.warning("Failed to fetch MCP tools. Continuing without MCP tools.", exc_info=True)
-    return create_agent(tools=tools, model=ChatDatabricks(endpoint=agent_model_endpoint()))
+    return create_agent(
+        tools=tools,
+        model=ChatDatabricks(endpoint=agent_model_endpoint()),
+        system_prompt=AGENT_SYSTEM_PROMPT,
+    )
 
 
 @invoke()
@@ -146,6 +166,7 @@ async def stream_handler(
     current_workspace_root = str(workspace_root())
     user_profile_block = "\n\n".join(build_profile_blocks(current_workspace_root)) or None
     tool_memory_block = build_tool_memory_block()
+    skill_blocks = build_skill_blocks(turn_items)
     conversation_id = get_session_id(request)
     approval_request_id, approval_approved = detect_approval_response(turn_items)
     if approval_request_id and approval_approved is True:
@@ -172,6 +193,7 @@ async def stream_handler(
             memory_state,
             user_profile_block=user_profile_block,
             tool_memory_block=tool_memory_block,
+            skill_blocks=skill_blocks,
         )
     else:
         optimized_input = build_optimized_messages(
@@ -179,6 +201,7 @@ async def stream_handler(
             state=None,
             user_profile_block=user_profile_block,
             tool_memory_block=tool_memory_block,
+            skill_blocks=skill_blocks,
         )
 
     # By default, uses service principal credentials.
