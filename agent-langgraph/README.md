@@ -10,6 +10,8 @@ The agent input and output format are defined by MLflow's ResponsesAgent interfa
 
 We recommend using AI coding assistants (Claude Code, Cursor, GitHub Copilot) to customize and deploy this template. Agent Skills in `.claude/skills/` provide step-by-step guidance for common tasks like setup, adding tools, and deployment. These skills are automatically detected by Claude, Cursor, and GitHub Copilot.
 
+This local app also supports runtime task skills for its own agent behavior. See [SKILLS.md](SKILLS.md) for the local skill format and activation model.
+
 ## Quick start
 
 Run the `uv run quickstart` script to quickly set up your local environment and start the agent server. At any step, if there are issues, refer to the manual local development loop setup below.
@@ -131,6 +133,33 @@ These values can be overridden in `.env` via `USER_PROFILE_PATH`, `PROJECT_PROFI
 ## Security and capability summary
 
 For a detailed description of what the app can and cannot do, including file access boundaries and approval requirements, see [CAPABILITIES_AND_LIMITATIONS.md](CAPABILITIES_AND_LIMITATIONS.md).
+
+## Marp presentations
+
+The agent can also help create [Marp](https://marp.app/) markdown presentations from the selected repo.
+
+The intended workflow is:
+
+- inspect the repo
+- propose a deck outline
+- generate a Marp markdown file
+- stage the deck file for approval before writing it
+
+Starter templates and guidance live in:
+
+- [MARP_PRESENTATIONS.md](MARP_PRESENTATIONS.md)
+- [skills/marp/SKILL.md](skills/marp/SKILL.md)
+- `skills/marp/templates/technical-walkthrough.md`
+- `skills/marp/templates/architecture-overview.md`
+- `skills/marp/templates/stakeholder-summary.md`
+
+Examples:
+
+- `Create a Marp deck explaining this repo to engineers`
+- `Make a 7-slide architecture presentation from this project`
+- `Create a stakeholder summary deck for this codebase`
+
+The first version is markdown-first: it generates Marp `.md` files but does not automatically render/export them.
 
 ## Local filesystem tools
 
