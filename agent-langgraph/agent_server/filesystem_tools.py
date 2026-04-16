@@ -4,7 +4,6 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 import uuid
 import hashlib
 from dataclasses import dataclass
@@ -21,6 +20,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 APPROVAL_PREFIX = "APPROVE_WRITE:"
 APPROVAL_SERVER_LABEL = "local-filesystem"
 STAGED_WRITE_MARKER = "__staged_write_request__"
+_FILE_READ_CACHE: dict[str, Any] = {}
+_TOOL_ACTIVITY_CACHE: dict[str, Any] = {}
+_TASK_STATE_CACHE: dict[str, Any] = {}
+_WORKSPACE_INDEX_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _safe_state_path(env_name: str, default_name: str) -> Path:
@@ -28,16 +31,8 @@ def _safe_state_path(env_name: str, default_name: str) -> Path:
     candidate = Path(configured) if configured else (PROJECT_ROOT / ".local" / default_name)
     if not candidate.is_absolute():
         candidate = (PROJECT_ROOT / candidate).resolve()
-
-    try:
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        candidate.parent.joinpath(".write-test").write_text("", encoding="utf-8")
-        candidate.parent.joinpath(".write-test").unlink(missing_ok=True)
-        return candidate
-    except OSError:
-        fallback_dir = Path(tempfile.gettempdir()) / "coding-buddy-state"
-        fallback_dir.mkdir(parents=True, exist_ok=True)
-        return fallback_dir / default_name
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    return candidate
 
 
 def utc_now() -> str:
@@ -66,20 +61,6 @@ def tool_activity_cache_path() -> Path:
 
 def task_state_path() -> Path:
     return _safe_state_path("FILES_TASK_STATE_PATH", "task_state.json")
-
-
-def workspace_index_path() -> Path:
-    configured = _safe_state_path("FILES_WORKSPACE_INDEX_PATH", "workspace_index.json")
-    if not configured.is_absolute():
-        configured = (PROJECT_ROOT / configured).resolve()
-
-    root = workspace_root()
-    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
-    stem = configured.stem or "workspace_index"
-    suffix = configured.suffix or ".json"
-    path = configured.with_name(f"{stem}-{digest}{suffix}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def max_read_bytes() -> int:
@@ -205,72 +186,30 @@ def _save_staged_writes(data: dict[str, dict]) -> None:
 
 
 def _load_file_read_cache() -> dict[str, Any]:
-    path = file_read_cache_path()
-    try:
-        exists = path.exists()
-    except OSError:
-        return {}
-    if not exists:
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return dict(_FILE_READ_CACHE)
 
 
 def _save_file_read_cache(data: dict[str, Any]) -> None:
-    try:
-        file_read_cache_path().write_text(
-            json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
-        )
-    except OSError:
-        return
+    _FILE_READ_CACHE.clear()
+    _FILE_READ_CACHE.update(data)
 
 
 def _load_tool_activity_cache() -> dict[str, Any]:
-    path = tool_activity_cache_path()
-    try:
-        exists = path.exists()
-    except OSError:
-        return {}
-    if not exists:
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return dict(_TOOL_ACTIVITY_CACHE)
 
 
 def _save_tool_activity_cache(data: dict[str, Any]) -> None:
-    try:
-        tool_activity_cache_path().write_text(
-            json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
-        )
-    except OSError:
-        return
+    _TOOL_ACTIVITY_CACHE.clear()
+    _TOOL_ACTIVITY_CACHE.update(data)
 
 
 def _load_task_state_cache() -> dict[str, Any]:
-    path = task_state_path()
-    try:
-        exists = path.exists()
-    except OSError:
-        return {}
-    if not exists:
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return dict(_TASK_STATE_CACHE)
 
 
 def _save_task_state_cache(data: dict[str, Any]) -> None:
-    try:
-        task_state_path().write_text(
-            json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
-        )
-    except OSError:
-        return
+    _TASK_STATE_CACHE.clear()
+    _TASK_STATE_CACHE.update(data)
 
 
 def _conversation_scope_id() -> str:
@@ -707,24 +646,12 @@ def _scan_workspace(root: Path) -> dict:
 
 
 def build_workspace_index(force_refresh: bool = False) -> dict:
-    path = workspace_index_path()
     current_root = str(workspace_root())
-    try:
-        path_exists = path.exists()
-    except OSError:
-        path_exists = False
-    if path_exists and not force_refresh:
-        try:
-            cached = json.loads(path.read_text(encoding="utf-8"))
-            if cached.get("root") == current_root:
-                return cached
-        except (json.JSONDecodeError, OSError):
-            pass
+    cached = _WORKSPACE_INDEX_CACHE.get(current_root)
+    if isinstance(cached, dict) and not force_refresh:
+        return cached
     index = _scan_workspace(Path(current_root))
-    try:
-        path.write_text(json.dumps(index, ensure_ascii=True, indent=2), encoding="utf-8")
-    except OSError:
-        pass
+    _WORKSPACE_INDEX_CACHE[current_root] = index
     return index
 
 
