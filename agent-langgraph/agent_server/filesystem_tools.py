@@ -181,11 +181,15 @@ def _read_text(path: Path) -> str:
 
 def _load_staged_writes() -> dict[str, dict]:
     path = staged_write_store_path()
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError:
+        return {}
+    if not exists:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
         return {}
 
 
@@ -202,11 +206,15 @@ def _save_staged_writes(data: dict[str, dict]) -> None:
 
 def _load_file_read_cache() -> dict[str, Any]:
     path = file_read_cache_path()
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError:
+        return {}
+    if not exists:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
         return {}
 
 
@@ -221,11 +229,15 @@ def _save_file_read_cache(data: dict[str, Any]) -> None:
 
 def _load_tool_activity_cache() -> dict[str, Any]:
     path = tool_activity_cache_path()
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError:
+        return {}
+    if not exists:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
         return {}
 
 
@@ -240,11 +252,15 @@ def _save_tool_activity_cache(data: dict[str, Any]) -> None:
 
 def _load_task_state_cache() -> dict[str, Any]:
     path = task_state_path()
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError:
+        return {}
+    if not exists:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
         return {}
 
 
@@ -693,15 +709,22 @@ def _scan_workspace(root: Path) -> dict:
 def build_workspace_index(force_refresh: bool = False) -> dict:
     path = workspace_index_path()
     current_root = str(workspace_root())
-    if path.exists() and not force_refresh:
+    try:
+        path_exists = path.exists()
+    except OSError:
+        path_exists = False
+    if path_exists and not force_refresh:
         try:
             cached = json.loads(path.read_text(encoding="utf-8"))
             if cached.get("root") == current_root:
                 return cached
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError):
             pass
     index = _scan_workspace(Path(current_root))
-    path.write_text(json.dumps(index, ensure_ascii=True, indent=2), encoding="utf-8")
+    try:
+        path.write_text(json.dumps(index, ensure_ascii=True, indent=2), encoding="utf-8")
+    except OSError:
+        pass
     return index
 
 
