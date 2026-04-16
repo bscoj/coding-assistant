@@ -22,9 +22,11 @@ from mlflow.types.responses import (
 from agent_server.filesystem_tools import (
     FILESYSTEM_TOOLS,
     apply_staged_write_by_approval_id,
+    build_task_scratchpad_block,
     build_tool_memory_block,
     clear_filesystem_tool_context,
     detect_approval_response,
+    record_task_request,
     set_filesystem_tool_context,
     workspace_root,
 )
@@ -60,6 +62,9 @@ Core behavior:
 - Prefer workspace_overview(), find_files_by_name(), recent_file_reads(), targeted search_files(), and search_code_blocks() before broad reads.
 - Use injected skill blocks when they are present for task-specific workflows.
 - Do not assume a skill is active unless it was injected for the current request.
+- When the user asks you to explore, understand, inspect, or figure out a repo, stay in exploration mode until you can give one coherent answer.
+- In exploration mode, do not stop after one or two file reads if important gaps remain. Chain a few high-signal tool calls together, then synthesize.
+- Only stop exploration early if you hit a real blocker or the user explicitly wants a quick first-pass answer.
 
 File changes:
 - Use staged write tools for all file edits.
@@ -165,6 +170,8 @@ async def stream_handler(
     turn_items = current_turn_items(request_items)
     current_workspace_root = str(workspace_root())
     user_profile_block = "\n\n".join(build_profile_blocks(current_workspace_root)) or None
+    record_task_request(turn_items)
+    task_scratchpad_block = build_task_scratchpad_block()
     tool_memory_block = build_tool_memory_block()
     skill_blocks = build_skill_blocks(turn_items)
     conversation_id = get_session_id(request)
@@ -192,6 +199,7 @@ async def stream_handler(
             turn_items,
             memory_state,
             user_profile_block=user_profile_block,
+            task_scratchpad_block=task_scratchpad_block,
             tool_memory_block=tool_memory_block,
             skill_blocks=skill_blocks,
         )
@@ -200,6 +208,7 @@ async def stream_handler(
             turn_items,
             state=None,
             user_profile_block=user_profile_block,
+            task_scratchpad_block=task_scratchpad_block,
             tool_memory_block=tool_memory_block,
             skill_blocks=skill_blocks,
         )
