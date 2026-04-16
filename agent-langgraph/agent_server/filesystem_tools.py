@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import uuid
 import hashlib
 from dataclasses import dataclass
@@ -22,6 +23,23 @@ APPROVAL_SERVER_LABEL = "local-filesystem"
 STAGED_WRITE_MARKER = "__staged_write_request__"
 
 
+def _safe_state_path(env_name: str, default_name: str) -> Path:
+    configured = os.getenv(env_name)
+    candidate = Path(configured) if configured else (PROJECT_ROOT / ".local" / default_name)
+    if not candidate.is_absolute():
+        candidate = (PROJECT_ROOT / candidate).resolve()
+
+    try:
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.parent.joinpath(".write-test").write_text("", encoding="utf-8")
+        candidate.parent.joinpath(".write-test").unlink(missing_ok=True)
+        return candidate
+    except OSError:
+        fallback_dir = Path(tempfile.gettempdir()) / "coding-buddy-state"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir / default_name
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -35,31 +53,23 @@ def workspace_root() -> Path:
 
 
 def staged_write_store_path() -> Path:
-    path = Path(os.getenv("FILES_STAGED_WRITES_PATH", str(PROJECT_ROOT / ".local" / "staged_writes.json")))
-    if not path.is_absolute():
-        path = (PROJECT_ROOT / path).resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return _safe_state_path("FILES_STAGED_WRITES_PATH", "staged_writes.json")
 
 
 def file_read_cache_path() -> Path:
-    path = Path(os.getenv("FILES_READ_CACHE_PATH", str(PROJECT_ROOT / ".local" / "file_read_cache.json")))
-    if not path.is_absolute():
-        path = (PROJECT_ROOT / path).resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return _safe_state_path("FILES_READ_CACHE_PATH", "file_read_cache.json")
 
 
 def tool_activity_cache_path() -> Path:
-    path = Path(os.getenv("FILES_TOOL_ACTIVITY_PATH", str(PROJECT_ROOT / ".local" / "tool_activity.json")))
-    if not path.is_absolute():
-        path = (PROJECT_ROOT / path).resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return _safe_state_path("FILES_TOOL_ACTIVITY_PATH", "tool_activity.json")
+
+
+def task_state_path() -> Path:
+    return _safe_state_path("FILES_TASK_STATE_PATH", "task_state.json")
 
 
 def workspace_index_path() -> Path:
-    configured = Path(os.getenv("FILES_WORKSPACE_INDEX_PATH", str(PROJECT_ROOT / ".local" / "workspace_index.json")))
+    configured = _safe_state_path("FILES_WORKSPACE_INDEX_PATH", "workspace_index.json")
     if not configured.is_absolute():
         configured = (PROJECT_ROOT / configured).resolve()
 
@@ -180,9 +190,14 @@ def _load_staged_writes() -> dict[str, dict]:
 
 
 def _save_staged_writes(data: dict[str, dict]) -> None:
-    staged_write_store_path().write_text(
-        json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
-    )
+    try:
+        staged_write_store_path().write_text(
+            json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
+        )
+    except OSError:
+        # If the preferred local state directory is unavailable, fail open for state persistence
+        # instead of breaking the user flow.
+        return
 
 
 def _load_file_read_cache() -> dict[str, Any]:
@@ -196,9 +211,12 @@ def _load_file_read_cache() -> dict[str, Any]:
 
 
 def _save_file_read_cache(data: dict[str, Any]) -> None:
-    file_read_cache_path().write_text(
-        json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
-    )
+    try:
+        file_read_cache_path().write_text(
+            json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
+        )
+    except OSError:
+        return
 
 
 def _load_tool_activity_cache() -> dict[str, Any]:
@@ -212,9 +230,31 @@ def _load_tool_activity_cache() -> dict[str, Any]:
 
 
 def _save_tool_activity_cache(data: dict[str, Any]) -> None:
-    tool_activity_cache_path().write_text(
-        json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
-    )
+    try:
+        tool_activity_cache_path().write_text(
+            json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
+        )
+    except OSError:
+        return
+
+
+def _load_task_state_cache() -> dict[str, Any]:
+    path = task_state_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_task_state_cache(data: dict[str, Any]) -> None:
+    try:
+        task_state_path().write_text(
+            json.dumps(data, indent=2, ensure_ascii=True, sort_keys=True), encoding="utf-8"
+        )
+    except OSError:
+        return
 
 
 def _conversation_scope_id() -> str:
@@ -239,6 +279,12 @@ def _tool_activity_scope_key() -> str:
     scope = _conversation_scope_id()
     root = str(workspace_root())
     return hashlib.sha256(f"{scope}:{root}".encode("utf-8")).hexdigest()[:24]
+
+
+def _task_scope_key() -> str:
+    scope = _conversation_scope_id()
+    root = str(workspace_root())
+    return hashlib.sha256(f"task:{scope}:{root}".encode("utf-8")).hexdigest()[:24]
 
 
 def _lookup_cached_read(path: Path, start_line: int, end_line: int) -> dict[str, Any] | None:
@@ -366,6 +412,168 @@ def _recent_searches(limit: int = 8) -> list[dict[str, Any]]:
     items = [item for item in searches if isinstance(item, dict)]
     items.sort(key=lambda item: item.get("recorded_at", ""), reverse=True)
     return items[:limit]
+
+
+def _latest_user_text(request_messages: list[dict] | None) -> str | None:
+    texts = [text.strip() for text in _approval_texts(request_messages) if text.strip()]
+    if not texts:
+        return None
+    return texts[-1]
+
+
+def _is_continuation_request(text: str) -> bool:
+    normalized = text.strip().lower()
+    continuation_literals = {
+        "continue",
+        "keep going",
+        "go on",
+        "keep exploring",
+        "look again",
+        "try again",
+        "continue exploring",
+        "keep looking",
+    }
+    if normalized in continuation_literals:
+        return True
+    return any(
+        phrase in normalized
+        for phrase in (
+            "keep going",
+            "continue exploring",
+            "look deeper",
+            "keep looking",
+            "dig deeper",
+        )
+    )
+
+
+def _is_exploration_request(text: str) -> bool:
+    normalized = text.strip().lower()
+    phrases = (
+        "explore repo",
+        "explore the repo",
+        "explore this repo",
+        "understand repo",
+        "understand the repo",
+        "look through the repo",
+        "inspect the repo",
+        "inspect repo",
+        "understand this project",
+        "understand the project",
+        "understand the codebase",
+        "walk through the repo",
+        "walk me through the repo",
+        "figure out how",
+        "how this works",
+        "how it works",
+        "get familiar with",
+    )
+    return any(phrase in normalized for phrase in phrases)
+
+
+def _trim_task_objective(text: str) -> str:
+    compact = " ".join(text.replace("\n", " ").split()).strip()
+    return compact[:280]
+
+
+def record_task_request(request_messages: list[dict] | None) -> None:
+    latest_user_text = _latest_user_text(request_messages)
+    if not latest_user_text:
+        return
+
+    cache = _load_task_state_cache()
+    scope_key = _task_scope_key()
+    current = cache.get(scope_key)
+    if not isinstance(current, dict):
+        current = {}
+
+    is_continuation = _is_continuation_request(latest_user_text)
+    previous_objective = str(current.get("objective", "")).strip()
+    objective = previous_objective if is_continuation and previous_objective else _trim_task_objective(latest_user_text)
+
+    previous_mode = str(current.get("mode", "task"))
+    mode = "exploration" if (_is_exploration_request(latest_user_text) or (is_continuation and previous_mode == "exploration")) else "task"
+
+    cache[scope_key] = {
+        "objective": objective,
+        "mode": mode,
+        "workspace_root": str(workspace_root()),
+        "last_user_turn": _trim_task_objective(latest_user_text),
+        "updated_at": utc_now(),
+    }
+    if len(cache) > 200:
+        items = sorted(
+            (
+                (cache_key, value)
+                for cache_key, value in cache.items()
+                if isinstance(value, dict)
+            ),
+            key=lambda item: item[1].get("updated_at", ""),
+        )
+        cache = {cache_key: cache[cache_key] for cache_key, _ in items[-150:]}
+    _save_task_state_cache(cache)
+
+
+def _current_task_state() -> dict[str, Any] | None:
+    cache = _load_task_state_cache()
+    state = cache.get(_task_scope_key())
+    return state if isinstance(state, dict) else None
+
+
+def build_task_scratchpad_block() -> str | None:
+    state = _current_task_state()
+    if not state:
+        return None
+
+    objective = str(state.get("objective", "")).strip()
+    mode = str(state.get("mode", "task")).strip() or "task"
+    if not objective:
+        return None
+
+    recent_reads = _recent_reads(limit=6)
+    recent_search_items = _recent_searches(limit=4)
+    unique_paths: list[str] = []
+    for item in recent_reads:
+        path = item.get("path")
+        if isinstance(path, str) and path not in unique_paths:
+            unique_paths.append(path)
+
+    sections = [
+        f"Objective: {objective}",
+        f"Mode: {mode}",
+    ]
+    if unique_paths:
+        sections.append("Files already inspected:\n" + "\n".join(f"- {path}" for path in unique_paths[:6]))
+    if recent_search_items:
+        search_lines = []
+        for item in recent_search_items[:4]:
+            query = str(item.get("query", "")).strip()
+            if not query:
+                continue
+            details = query
+            if item.get("path"):
+                details += f" in {item['path']}"
+            search_lines.append(f"- {details}")
+        if search_lines:
+            sections.append("Recent search focus:\n" + "\n".join(search_lines))
+
+    if mode == "exploration":
+        if len(unique_paths) < 3:
+            next_step = (
+                "Keep exploring before answering. Read a few more high-signal files such as README/docs, "
+                "config, and likely entrypoints so you can give one coherent summary instead of stopping early."
+            )
+        else:
+            next_step = (
+                "Keep chaining investigation until you can explain the repo clearly. Synthesize what you found, "
+                "note any real gaps, and only stop once you have a coherent answer or a concrete blocker."
+            )
+    else:
+        next_step = (
+            "Use the inspected files first. Read more only if a concrete gap remains, then answer decisively."
+        )
+    sections.append(f"Next step: {next_step}")
+    return "Active task scratchpad\n\n" + "\n\n".join(sections)
 
 
 def build_tool_memory_block() -> str | None:
