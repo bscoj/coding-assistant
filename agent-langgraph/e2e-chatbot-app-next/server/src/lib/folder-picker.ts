@@ -9,23 +9,53 @@ function trimOutput(value: string | undefined) {
 }
 
 async function pickWindowsFolder() {
-  const script = [
+  const explorerStyleScript = [
     'Add-Type -AssemblyName System.Windows.Forms',
-    '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
-    '$dialog.Description = "Select repository"',
-    '$dialog.ShowNewFolderButton = $false',
+    '$dialog = New-Object System.Windows.Forms.OpenFileDialog',
+    '$dialog.Title = "Select repository"',
+    '$dialog.Filter = "Folders|*.folder"',
+    '$dialog.CheckFileExists = $false',
+    '$dialog.CheckPathExists = $true',
+    '$dialog.ValidateNames = $false',
+    '$dialog.DereferenceLinks = $true',
+    '$dialog.Multiselect = $false',
+    '$dialog.FileName = "Select this folder"',
     'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {',
-    '  Write-Output $dialog.SelectedPath',
+    '  if (Test-Path $dialog.FileName -PathType Container) {',
+    '    Write-Output $dialog.FileName',
+    '  } else {',
+    '    Split-Path -Path $dialog.FileName -Parent | Write-Output',
+    '  }',
     '}',
   ].join('; ');
 
-  const { stdout } = await execFileAsync('powershell.exe', [
-    '-NoProfile',
-    '-STA',
-    '-Command',
-    script,
-  ]);
-  return trimOutput(stdout);
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile',
+      '-STA',
+      '-Command',
+      explorerStyleScript,
+    ]);
+    return trimOutput(stdout);
+  } catch {
+    const fallbackScript = [
+      'Add-Type -AssemblyName System.Windows.Forms',
+      '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
+      '$dialog.Description = "Select repository"',
+      '$dialog.ShowNewFolderButton = $false',
+      'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {',
+      '  Write-Output $dialog.SelectedPath',
+      '}',
+    ].join('; ');
+
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile',
+      '-STA',
+      '-Command',
+      fallbackScript,
+    ]);
+    return trimOutput(stdout);
+  }
 }
 
 async function pickMacFolder() {
