@@ -321,11 +321,12 @@ const PurePreviewMessage = ({
                     <McpToolHeader
                       serverName={mcpServerName}
                       toolName={toolName}
+                      input={input}
                       state={effectiveState}
                       approved={approved}
                     />
                     <McpToolContent>
-                      <McpToolInput input={input} />
+                      <McpToolInput input={input} toolName={toolName} />
                       {state === 'approval-requested' && (
                         <McpApprovalActions
                           onApprove={() =>

@@ -16,20 +16,13 @@ There is no database or separate admin step in the current implementation. The b
 Each skill folder contains:
 
 - `skill.json`: metadata used for discovery and matching
-- `SKILL.md`: the actual instructions injected into the model when the skill is active
+- `SKILL.md`: the instructions injected into the model when the skill is active
 - optional supporting assets such as `templates/`, examples, or reference files
 
 Example:
 
 ```text
 skills/
-  marp/
-    skill.json
-    SKILL.md
-    templates/
-      technical-walkthrough.md
-      architecture-overview.md
-      stakeholder-summary.md
   project-update/
     skill.json
     SKILL.md
@@ -41,14 +34,13 @@ Example `skill.json`:
 
 ```json
 {
-  "name": "marp",
-  "description": "Create Marp markdown presentations from repo context.",
+  "name": "project-update",
+  "description": "Maintain daily status files and draft concise ServiceNow-ready updates using repo and git context.",
   "triggers": [
-    "marp",
-    "presentation",
-    "slides",
-    "slide deck",
-    "deck"
+    "project update",
+    "daily update",
+    "status update",
+    "servicenow update"
   ]
 }
 ```
@@ -60,7 +52,7 @@ For each request, the backend:
 1. Reads the current user turn.
 2. Scans `skills/` for registered skills.
 3. Selects skills conservatively when:
-   - the user explicitly mentions the skill by name, like `marp` or `$marp`
+   - the user explicitly mentions the skill by name
    - or the user message contains one of the configured trigger phrases
 4. Injects only the matching skill instructions into the current request as extra system context.
 
@@ -68,9 +60,8 @@ The base system prompt stays lean. Skill instructions are only included when the
 
 ## Why this exists
 
-This keeps context higher-signal than putting every feature into one giant global prompt. It also makes it easier to add new capabilities incrementally, because each workflow can live in its own skill folder with its own templates and instructions.
+This keeps context higher-signal than putting every feature into one giant global prompt. It also makes it easier to add new capabilities incrementally, because each workflow can live in its own skill folder with its own instructions and templates.
 
 ## Current skills
 
-- `marp`: creates Marp markdown presentations from repo context
 - `project-update`: maintains daily status files and drafts concise ServiceNow-ready updates using repo and git context
