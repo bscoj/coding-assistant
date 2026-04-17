@@ -793,6 +793,44 @@ def _build_marker(operation_id: str, tool_name: str, summary: str, changes: list
     )
 
 
+def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(workspace_root()), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _git_repo_available() -> bool:
+    result = _run_git(["rev-parse", "--show-toplevel"])
+    return result.returncode == 0
+
+
+@tool
+def git_repo_summary(max_commits: int = 8) -> str:
+    """Summarize the current git repo state for the selected workspace: branch, changed files, and recent commits."""
+    if not _git_repo_available():
+        return "The selected workspace is not a git repository."
+
+    commit_limit = max(1, min(max_commits, 20))
+    branch_result = _run_git(["branch", "--show-current"])
+    status_result = _run_git(["status", "--short"])
+    diff_stat_result = _run_git(["diff", "--stat"])
+    staged_stat_result = _run_git(["diff", "--cached", "--stat"])
+    commits_result = _run_git(["log", f"-n{commit_limit}", "--oneline", "--decorate"])
+
+    summary = {
+        "workspace_root": str(workspace_root()),
+        "branch": branch_result.stdout.strip() or "(detached)",
+        "status": [line for line in status_result.stdout.splitlines() if line.strip()][:80],
+        "unstaged_diff_stat": [line for line in diff_stat_result.stdout.splitlines() if line.strip()][:40],
+        "staged_diff_stat": [line for line in staged_stat_result.stdout.splitlines() if line.strip()][:40],
+        "recent_commits": [line for line in commits_result.stdout.splitlines() if line.strip()][:commit_limit],
+    }
+    return json.dumps(summary, indent=2, ensure_ascii=True)
+
+
 @tool
 def list_files(path: str = ".", recursive: bool = False) -> str:
     """List files or directories within the configured workspace root."""
@@ -1287,6 +1325,7 @@ FILESYSTEM_TOOLS = [
     workspace_overview,
     find_files_by_name,
     recent_file_reads,
+    git_repo_summary,
     list_files,
     search_files,
     search_code_blocks,

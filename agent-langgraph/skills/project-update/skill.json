@@ -1,0 +1,14 @@
+{
+  "name": "project-update",
+  "description": "Maintain daily project update files and draft concise ServiceNow-style status updates using repo and git context.",
+  "triggers": [
+    "project update",
+    "daily update",
+    "status update",
+    "end of day update",
+    "servicenow update",
+    "project status",
+    "what did i get done today",
+    "progress update"
+  ]
+}

@@ -161,6 +161,29 @@ Examples:
 
 The first version is markdown-first: it generates Marp `.md` files but does not automatically render/export them.
 
+## Project updates
+
+The agent can also help maintain daily project update files and draft concise ServiceNow-style status summaries.
+
+The intended workflow is:
+
+- capture focus for today
+- refresh progress using repo and git context
+- keep a daily update file current
+- draft a short status update you can paste into ServiceNow
+
+Starter guidance and templates live in:
+
+- [skills/project-update/SKILL.md](skills/project-update/SKILL.md)
+- `skills/project-update/templates/daily-update.md`
+
+Examples:
+
+- `Create today's project update file`
+- `Refresh my daily update from this repo`
+- `Draft a ServiceNow update from today's work`
+- `Update my progress and tell me what likely got completed`
+
 ## Local filesystem tools
 
 The agent also exposes local filesystem tools for local development:
@@ -168,6 +191,7 @@ The agent also exposes local filesystem tools for local development:
 - `workspace_overview`: cached repo structure and important files
 - `find_files_by_name`: fast path/name lookup using the cached workspace index
 - `list_files`: list files/directories inside the configured workspace root
+- `git_repo_summary`: summarize branch, changed files, diff stats, and recent commits for the selected repo
 - `search_files`: search file contents
 - `read_file`: read a file with line numbers
 - `stage_file_write`: stage a create/overwrite

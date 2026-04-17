@@ -30,6 +30,11 @@ skills/
       technical-walkthrough.md
       architecture-overview.md
       stakeholder-summary.md
+  project-update/
+    skill.json
+    SKILL.md
+    templates/
+      daily-update.md
 ```
 
 Example `skill.json`:
@@ -68,3 +73,4 @@ This keeps context higher-signal than putting every feature into one giant globa
 ## Current skills
 
 - `marp`: creates Marp markdown presentations from repo context
+- `project-update`: maintains daily status files and drafts concise ServiceNow-ready updates using repo and git context
