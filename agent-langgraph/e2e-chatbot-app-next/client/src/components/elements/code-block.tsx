@@ -11,58 +11,58 @@ const darkCodeTheme = {
   ...oneDark,
   'pre[class*="language-"]': {
     ...(oneDark['pre[class*="language-"]'] || {}),
-    background: '#101010',
-    color: '#ffffff',
+    background: '#101214',
+    color: '#f3f5f7',
     textShadow: 'none',
   },
   'code[class*="language-"]': {
     ...(oneDark['code[class*="language-"]'] || {}),
-    color: '#ffffff',
+    color: '#f3f5f7',
     textShadow: 'none',
     fontFamily:
       'JetBrains Mono, SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas, monospace',
   },
   'comment': {
-    color: '#8b8b8b',
+    color: '#7d8693',
   },
   'prolog': {
-    color: '#8b8b8b',
+    color: '#7d8693',
   },
   'doctype': {
-    color: '#8b8b8b',
+    color: '#7d8693',
   },
   'cdata': {
-    color: '#8b8b8b',
+    color: '#7d8693',
   },
   'punctuation': {
-    color: '#a0a0a0',
+    color: '#a7b0bc',
   },
   'property': {
-    color: '#ffffff',
+    color: '#f3f5f7',
   },
   'tag': {
-    color: '#ffc799',
+    color: '#8ce6b0',
   },
   'boolean': {
-    color: '#ffc799',
+    color: '#ffd58f',
   },
   'number': {
-    color: '#ffc799',
+    color: '#ffd58f',
   },
   'constant': {
-    color: '#ffc799',
+    color: '#ffd58f',
   },
   'symbol': {
     color: '#99ffe4',
   },
   'deleted': {
-    color: '#ff8080',
+    color: '#ff8b8b',
   },
   'selector': {
     color: '#99ffe4',
   },
   'attr-name': {
-    color: '#ffc799',
+    color: '#8ce6b0',
   },
   'string': {
     color: '#99ffe4',
@@ -71,45 +71,45 @@ const darkCodeTheme = {
     color: '#99ffe4',
   },
   'builtin': {
-    color: '#ffc799',
+    color: '#9fd4ff',
   },
   'inserted': {
     color: '#99ffe4',
   },
   'operator': {
-    color: '#a0a0a0',
+    color: '#a7b0bc',
   },
   'entity': {
-    color: '#ffffff',
+    color: '#f3f5f7',
     cursor: 'help',
   },
   'url': {
-    color: '#ffc799',
+    color: '#8ce6b0',
   },
   'atrule': {
-    color: '#a0a0a0',
+    color: '#8ce6b0',
   },
   'attr-value': {
     color: '#99ffe4',
   },
   'keyword': {
-    color: '#a0a0a0',
+    color: '#8ce6b0',
   },
   'function': {
     color: '#ffc799',
   },
   'class-name': {
-    color: '#ffc799',
+    color: '#9fd4ff',
   },
   'regex': {
     color: '#99ffe4',
   },
   'important': {
-    color: '#ffc799',
+    color: '#ffd58f',
     fontWeight: '600',
   },
   'variable': {
-    color: '#ffffff',
+    color: '#f3f5f7',
   },
   'bold': {
     fontWeight: '700',
@@ -145,7 +145,7 @@ export const CodeBlock = ({
   <CodeBlockContext.Provider value={{ code }}>
     <div
       className={cn(
-        'relative w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-[#101010] text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]',
+        'relative w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-[#101214] text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]',
         className,
       )}
       {...props}
@@ -188,8 +188,8 @@ export const CodeBlock = ({
             padding: '1.05rem 1.15rem',
             fontSize: '0.88rem',
             lineHeight: '1.72',
-            background: '#101010',
-            color: '#ffffff',
+            background: '#101214',
+            color: '#f3f5f7',
             overflowX: 'auto',
             overflowWrap: 'normal',
             wordBreak: 'normal',
