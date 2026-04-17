@@ -268,8 +268,17 @@
 
 .codex-response pre,
 .codex-response pre code {
-  background: #101010 !important;
-  color: #ffffff !important;
+  background: #101214 !important;
+  color: #f3f5f7 !important;
+}
+
+.dark .codex-response [data-streamdown='code-block-body'] {
+  background: var(--shiki-dark-bg, #101214) !important;
+  color: var(--shiki-dark, #f3f5f7) !important;
+}
+
+.dark .codex-response [data-streamdown='code-block-body'] [style*='--shiki-dark'] {
+  color: var(--shiki-dark) !important;
 }
 
 .codex-response pre code .token.comment,
