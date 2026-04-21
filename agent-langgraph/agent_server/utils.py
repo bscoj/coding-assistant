@@ -13,7 +13,11 @@ from mlflow.types.responses import (
     output_to_responses_items_stream,
 )
 
-from agent_server.filesystem_tools import is_staged_write_marker, parse_staged_write_marker
+from agent_server.filesystem_tools import (
+    approval_payload_for_staged_write,
+    is_staged_write_marker,
+    parse_staged_write_marker,
+)
 
 
 def get_session_id(request: ResponsesAgentRequest) -> str | None:
@@ -58,22 +62,17 @@ async def process_agent_astream_events(
                         if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
                             if is_staged_write_marker(msg.content):
                                 marker = parse_staged_write_marker(msg.content)
+                                approval_payload = approval_payload_for_staged_write(
+                                    marker["request_id"],
+                                    marker,
+                                )
                                 yield ResponsesAgentStreamEvent(
                                     type="response.output_item.done",
                                     item={
                                         "type": "mcp_approval_request",
                                         "id": marker["request_id"],
                                         "name": marker["tool_name"],
-                                        "arguments": json.dumps(
-                                            {
-                                                "summary": marker.get("summary"),
-                                                "rationale": marker.get("rationale"),
-                                                "riskLevel": marker.get("risk_level"),
-                                                "workspaceRoot": marker.get("workspace_root"),
-                                                "instruction": marker.get("instruction"),
-                                                "changes": marker.get("changes", []),
-                                            }
-                                        ),
+                                        "arguments": json.dumps(approval_payload),
                                         "server_label": marker["server_label"],
                                     },
                                     output_index=0,

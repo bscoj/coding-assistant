@@ -19,8 +19,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_THRESHOLD_MESSAGES = 10
 DEFAULT_RECENT_MESSAGES = 8
+DEFAULT_WORK_THRESHOLD_MESSAGES = 8
+DEFAULT_WORK_RECENT_MESSAGES = 24
 DEFAULT_MIN_FACT_CONFIDENCE = 0.65
 DEFAULT_MAX_SUMMARY_WORDS = 450
+DEFAULT_WORK_MAX_SUMMARY_WORDS = 1000
+DEFAULT_MEMORY_MODE = "work"
+DEFAULT_TOOL_SUMMARY_MAX_CHARS = 1200
 
 
 def memory_enabled() -> bool:
@@ -49,16 +54,43 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def recent_messages_limit() -> int:
+def normalize_memory_mode(mode: str | None = None) -> str:
+    raw = (mode or os.getenv("MEMORY_MODE", DEFAULT_MEMORY_MODE)).strip().lower()
+    if raw in {"balanced", "standard", "default"}:
+        return "balanced"
+    if raw == "work":
+        return "work"
+    logger.warning("Invalid MEMORY_MODE=%s. Using %s.", raw, DEFAULT_MEMORY_MODE)
+    return DEFAULT_MEMORY_MODE
+
+
+def recent_messages_limit(mode: str | None = None) -> int:
+    if normalize_memory_mode(mode) == "work":
+        return _env_int("MEMORY_WORK_RECENT_MESSAGES", DEFAULT_WORK_RECENT_MESSAGES)
     return _env_int("MEMORY_RECENT_MESSAGES", DEFAULT_RECENT_MESSAGES)
 
 
-def summarize_threshold_messages() -> int:
+def summarize_threshold_messages(mode: str | None = None) -> int:
+    if normalize_memory_mode(mode) == "work":
+        return _env_int(
+            "MEMORY_WORK_SUMMARY_THRESHOLD_MESSAGES",
+            DEFAULT_WORK_THRESHOLD_MESSAGES,
+        )
     return _env_int("MEMORY_SUMMARY_THRESHOLD_MESSAGES", DEFAULT_THRESHOLD_MESSAGES)
+
+
+def max_summary_words(mode: str | None = None) -> int:
+    if normalize_memory_mode(mode) == "work":
+        return _env_int("MEMORY_WORK_MAX_SUMMARY_WORDS", DEFAULT_WORK_MAX_SUMMARY_WORDS)
+    return _env_int("MEMORY_MAX_SUMMARY_WORDS", DEFAULT_MAX_SUMMARY_WORDS)
 
 
 def min_fact_confidence() -> float:
     return _env_float("MEMORY_MIN_FACT_CONFIDENCE", DEFAULT_MIN_FACT_CONFIDENCE)
+
+
+def tool_summary_max_chars() -> int:
+    return _env_int("MEMORY_TOOL_SUMMARY_MAX_CHARS", DEFAULT_TOOL_SUMMARY_MAX_CHARS)
 
 
 def memory_model():
@@ -73,13 +105,15 @@ def memory_model():
 
 
 def memory_runtime_config() -> dict[str, Any]:
+    mode = normalize_memory_mode()
     return {
         "enabled": memory_enabled(),
+        "mode": mode,
         "db_path": os.getenv("MEMORY_DB_PATH", ".local/conversation_memory.db"),
-        "summary_threshold_messages": summarize_threshold_messages(),
-        "recent_messages": recent_messages_limit(),
+        "summary_threshold_messages": summarize_threshold_messages(mode),
+        "recent_messages": recent_messages_limit(mode),
         "min_fact_confidence": min_fact_confidence(),
-        "max_summary_words": _env_int("MEMORY_MAX_SUMMARY_WORDS", DEFAULT_MAX_SUMMARY_WORDS),
+        "max_summary_words": max_summary_words(mode),
         "memory_model_endpoint": os.getenv(
             "MEMORY_MODEL_ENDPOINT",
             os.getenv("AGENT_MODEL_ENDPOINT", "databricks-gpt-5-2"),
@@ -104,6 +138,67 @@ def item_text(item: dict[str, Any]) -> str:
         if parts:
             return "\n".join(parts)
     return json.dumps(content if content is not None else item, ensure_ascii=True)
+
+
+def _truncate_for_summary(text: str, limit: int | None = None) -> str:
+    max_chars = limit or tool_summary_max_chars()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n... [truncated for memory summary]"
+
+
+def _compact_tool_value(value: Any) -> Any:
+    if isinstance(value, str):
+        if len(value) > 500:
+            return {
+                "omitted_chars": len(value),
+                "preview": value[:240],
+                "note": "large tool argument omitted from memory summary",
+            }
+        return value
+    if isinstance(value, list):
+        return [_compact_tool_value(item) for item in value[:20]]
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for key, child in value.items():
+            if key in {"content", "preview", "changes_json", "search_text", "replace_text"}:
+                compact[key] = _compact_tool_value(child)
+            elif isinstance(child, (dict, list)):
+                compact[key] = _compact_tool_value(child)
+            else:
+                compact[key] = child
+        return compact
+    return value
+
+
+def summary_safe_item_text(item: dict[str, Any]) -> str:
+    role = item.get("role")
+    if role == "tool":
+        return _truncate_for_summary(item_text(item))
+
+    tool_calls = item.get("tool_calls")
+    if isinstance(tool_calls, list):
+        compact_calls = []
+        for call in tool_calls[:8]:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            arguments = function.get("arguments") if isinstance(function, dict) else None
+            try:
+                parsed_args = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except json.JSONDecodeError:
+                parsed_args = arguments
+            compact_calls.append(
+                {
+                    "id": call.get("id"),
+                    "type": call.get("type"),
+                    "name": function.get("name") if isinstance(function, dict) else None,
+                    "arguments": _compact_tool_value(parsed_args),
+                }
+            )
+        return json.dumps({"assistant_tool_calls": compact_calls}, ensure_ascii=True)
+
+    return _truncate_for_summary(item_text(item), 4000)
 
 
 def _extract_assistant_text(item: dict[str, Any]) -> str | None:
@@ -142,7 +237,7 @@ def render_messages(messages: list[StoredMessage]) -> str:
     rendered: list[str] = []
     for msg in messages:
         item = json.loads(msg.content_json)
-        rendered.append(f"[{msg.turn_index}] {msg.role}: {item_text(item)}")
+        rendered.append(f"[{msg.turn_index}] {msg.role}: {summary_safe_item_text(item)}")
     return "\n\n".join(rendered)
 
 
@@ -243,6 +338,11 @@ Update the conversation summary using the existing summary and new conversation 
 Requirements:
 - Keep only information that is useful for future turns.
 - Preserve decisions, constraints, unresolved items, and important user preferences.
+- Preserve generated code and technical artifacts when they may be needed later:
+  filenames, function/class names, SQL/table names, config keys, CLI commands,
+  model/feature names, bugs fixed, and exact snippets when short enough to matter.
+- If code was proposed but not written to disk, summarize what it did and where the user expected it to go.
+- If code was written or approved, record the target file path and the key implementation details.
 - Remove repetition and casual chatter.
 - Prefer concrete technical state over narrative detail.
 - Keep the result under {max_summary_words} words.
@@ -308,19 +408,20 @@ def _extract_json_block(text: str) -> dict[str, Any]:
     return json.loads(candidate[start : end + 1])
 
 
-async def maybe_refresh_memory(conversation_id: str) -> None:
+async def maybe_refresh_memory(conversation_id: str, mode: str | None = None) -> None:
     if not memory_enabled():
         return
 
+    effective_mode = normalize_memory_mode(mode)
     store = get_memory_store()
-    keep_recent = recent_messages_limit()
+    keep_recent = recent_messages_limit(effective_mode)
     unsummarized_messages = store.load_unsummarized_messages(conversation_id, keep_recent_messages=keep_recent)
-    if len(unsummarized_messages) < summarize_threshold_messages():
+    if len(unsummarized_messages) < summarize_threshold_messages(effective_mode):
         return
 
     state = store.load_memory_state(conversation_id, recent_messages_limit=keep_recent)
     message_text = render_messages(unsummarized_messages)
-    max_words = _env_int("MEMORY_MAX_SUMMARY_WORDS", DEFAULT_MAX_SUMMARY_WORDS)
+    max_words = max_summary_words(effective_mode)
 
     try:
         summary_text = await _invoke_text(

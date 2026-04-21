@@ -15,6 +15,11 @@ import {
   getLocalAgentModelConfig,
   getLocalAgentStorageConfig,
 } from '../lib/local-agent-config';
+import {
+  getLocalMemoryConfig,
+  setLocalMemoryMode,
+  type MemoryMode,
+} from '../lib/local-app-settings';
 import { pickFolder } from '../lib/folder-picker';
 import {
   getLocalChatHistoryPath,
@@ -55,6 +60,7 @@ configRouter.get('/', async (req: Request, res: Response) => {
   const repo = getLocalRepoConfig();
   const models = getLocalAgentModelConfig();
   const storage = getLocalAgentStorageConfig();
+  const memory = getLocalMemoryConfig();
 
   let missingScopes = oboInfo.endpointRequiredScopes;
 
@@ -77,6 +83,7 @@ configRouter.get('/', async (req: Request, res: Response) => {
     },
     repo,
     models,
+    memory,
     storage: {
       agentRoot: storage.agentRoot,
       conversationMemoryDbPath: storage.conversationMemoryDbPath,
@@ -86,6 +93,21 @@ configRouter.get('/', async (req: Request, res: Response) => {
       missingScopes,
     },
   });
+});
+
+configRouter.put('/memory', async (req: Request, res: Response) => {
+  const mode = req.body?.mode;
+
+  if (mode !== 'balanced' && mode !== 'work') {
+    res.status(400).json({
+      code: 'bad_request:api',
+      cause: 'mode must be balanced or work',
+    });
+    return;
+  }
+
+  const memory = setLocalMemoryMode(mode as MemoryMode);
+  res.json({ memory });
 });
 
 configRouter.put('/repo', async (req: Request, res: Response) => {

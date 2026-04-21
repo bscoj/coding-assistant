@@ -110,7 +110,7 @@ export function ProfileSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { repo, storage } = useAppConfig();
+  const { repo, storage, memory, setMemoryMode } = useAppConfig();
   const [scope, setScope] = useState<ProfileScope>('global');
   const [profile, setProfile] = useState<ProfileDocument>(EMPTY_PROFILE);
   const [draftEntries, setDraftEntries] = useState<ProfileEntry[]>([]);
@@ -336,6 +336,58 @@ export function ProfileSheet({
                 Current profile path:
                 <div className="mt-1 break-all font-mono text-white/72">
                   {profile.path ?? 'Unavailable'}
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 rounded-2xl border border-emerald-300/15 bg-emerald-300/[0.04] p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm font-medium text-white/90">
+                    Work mode memory
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-white/50">
+                    Keep more recent raw chat in context before summarizing older turns.
+                    Better for long coding sessions; costs more tokens.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={memory?.mode === 'work'}
+                  onClick={() =>
+                    setMemoryMode(memory?.mode === 'work' ? 'balanced' : 'work')
+                  }
+                  className={`relative h-7 w-12 shrink-0 rounded-full border transition ${
+                    memory?.mode === 'work'
+                      ? 'border-emerald-300/45 bg-emerald-300/25'
+                      : 'border-white/[0.12] bg-white/[0.05]'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-1 size-5 rounded-full bg-white transition ${
+                      memory?.mode === 'work' ? 'left-6' : 'left-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-white/50 sm:grid-cols-3">
+                <div className="rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2">
+                  <div className="uppercase tracking-[0.12em] text-white/35">Mode</div>
+                  <div className="mt-1 font-medium text-white/80">
+                    {memory?.mode === 'work' ? 'Work' : 'Balanced'}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2">
+                  <div className="uppercase tracking-[0.12em] text-white/35">Raw window</div>
+                  <div className="mt-1 font-medium text-white/80">
+                    {memory?.recentMessages ?? '-'} messages
+                  </div>
+                </div>
+                <div className="rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2">
+                  <div className="uppercase tracking-[0.12em] text-white/35">Summary</div>
+                  <div className="mt-1 font-medium text-white/80">
+                    {memory?.maxSummaryWords ?? '-'} words
+                  </div>
                 </div>
               </div>
             </div>

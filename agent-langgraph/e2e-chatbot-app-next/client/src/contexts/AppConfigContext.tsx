@@ -20,6 +20,15 @@ interface StorageConfig {
   localChatHistoryPath: string;
 }
 
+export type MemoryMode = 'balanced' | 'work';
+
+interface MemoryConfig {
+  mode: MemoryMode;
+  recentMessages: number;
+  summaryThresholdMessages: number;
+  maxSummaryWords: number;
+}
+
 interface ConfigResponse {
   features: {
     chatHistory: boolean;
@@ -27,6 +36,7 @@ interface ConfigResponse {
   };
   repo: RepoConfig;
   models: ModelConfig;
+  memory: MemoryConfig;
   storage: StorageConfig;
   obo?: {
     missingScopes: string[];
@@ -43,8 +53,10 @@ interface AppConfigContextType {
   repo: RepoConfig | undefined;
   hasRepoConfigured: boolean;
   models: ModelConfig | undefined;
+  memory: MemoryConfig | undefined;
   storage: StorageConfig | undefined;
   setRepoPath: (path: string | null) => Promise<void>;
+  setMemoryMode: (mode: MemoryMode) => Promise<void>;
 }
 
 const AppConfigContext = createContext<AppConfigContextType | undefined>(
@@ -84,6 +96,27 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  async function setMemoryMode(mode: MemoryMode) {
+    const response = await fetchWithErrorHandlers('/api/config/memory', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ mode }),
+    });
+    const payload = (await response.json()) as { memory: MemoryConfig };
+    await mutate(
+      (current) =>
+        current
+          ? {
+              ...current,
+              memory: payload.memory,
+            }
+          : current,
+      false,
+    );
+  }
+
   const value: AppConfigContextType = {
     config: data,
     isLoading,
@@ -95,8 +128,10 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     repo: data?.repo,
     hasRepoConfigured: !!data?.repo?.path,
     models: data?.models,
+    memory: data?.memory,
     storage: data?.storage,
     setRepoPath,
+    setMemoryMode,
   };
 
   return (

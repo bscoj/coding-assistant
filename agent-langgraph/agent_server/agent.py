@@ -34,6 +34,7 @@ from agent_server.memory_pipeline import (
     assistant_outputs_to_items,
     build_optimized_messages,
     maybe_refresh_memory,
+    normalize_memory_mode,
     recent_messages_limit,
 )
 from agent_server.memory_store import get_memory_store
@@ -118,6 +119,10 @@ def available_agent_model_endpoints() -> list[str]:
     return values
 
 
+def requested_memory_mode() -> str:
+    return normalize_memory_mode(get_request_headers().get("x-codex-memory-mode"))
+
+
 @tool
 def get_current_time() -> str:
     """Get the current date and time."""
@@ -175,6 +180,7 @@ async def stream_handler(
     tool_memory_block = build_tool_memory_block()
     skill_blocks = build_skill_blocks(turn_items)
     conversation_id = get_session_id(request)
+    memory_mode = requested_memory_mode()
     approval_request_id, approval_approved = detect_approval_response(turn_items)
     if approval_request_id and approval_approved is True:
         text = apply_staged_write_by_approval_id(approval_request_id)
@@ -193,7 +199,7 @@ async def stream_handler(
         store = get_memory_store()
         store.save_messages(conversation_id, turn_items)
         memory_state = store.load_memory_state(
-            conversation_id, recent_messages_limit=recent_messages_limit()
+            conversation_id, recent_messages_limit=recent_messages_limit(memory_mode)
         )
         optimized_input = build_optimized_messages(
             turn_items,
@@ -237,7 +243,7 @@ async def stream_handler(
             except Exception:
                 logger.exception("Failed to persist or refresh conversation memory.")
             else:
-                _run_background(maybe_refresh_memory(conversation_id))
+                _run_background(maybe_refresh_memory(conversation_id, mode=memory_mode))
         if output_items:
             try:
                 interaction_items = turn_items + assistant_outputs_to_items(output_items)

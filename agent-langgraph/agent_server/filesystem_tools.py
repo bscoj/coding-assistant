@@ -64,11 +64,23 @@ def task_state_path() -> Path:
 
 
 def max_read_bytes() -> int:
-    return int(os.getenv("FILES_MAX_READ_BYTES", "60000"))
+    return int(os.getenv("FILES_MAX_READ_BYTES", "40000"))
+
+
+def max_read_lines() -> int:
+    return int(os.getenv("FILES_MAX_READ_LINES", "160"))
 
 
 def max_search_results() -> int:
-    return int(os.getenv("FILES_MAX_SEARCH_RESULTS", "50"))
+    return int(os.getenv("FILES_MAX_SEARCH_RESULTS", "25"))
+
+
+def max_tool_output_chars() -> int:
+    return int(os.getenv("FILES_MAX_TOOL_OUTPUT_CHARS", "12000"))
+
+
+def max_search_line_chars() -> int:
+    return int(os.getenv("FILES_MAX_SEARCH_LINE_CHARS", "320"))
 
 
 def max_indexed_files() -> int:
@@ -158,6 +170,20 @@ def _read_text(path: Path) -> str:
             f"File is too large to read directly ({size} bytes). Limit is {max_read_bytes()} bytes."
         )
     return path.read_text(encoding="utf-8")
+
+
+def _truncate_line(line: str, limit: int | None = None) -> str:
+    max_chars = limit or max_search_line_chars()
+    if len(line) <= max_chars:
+        return line
+    return line[:max_chars] + " ... [truncated]"
+
+
+def _truncate_output(text: str, limit: int | None = None) -> str:
+    max_chars = limit or max_tool_output_chars()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n... [tool output truncated; narrow the search or read a smaller range]"
 
 
 def _load_staged_writes() -> dict[str, dict]:
@@ -776,6 +802,15 @@ def _stage_operation(operation: dict) -> str:
 def _build_marker(operation_id: str, tool_name: str, summary: str, changes: list[dict]) -> str:
     rationale = _latest_user_request_summary()
     current_root = str(workspace_root())
+    compact_changes = [
+        {
+            "path": change.get("path"),
+            "mode": change.get("mode"),
+            "content_bytes": len(str(change.get("content", "")).encode("utf-8")),
+            "preview": _truncate_output(str(change.get("preview", "")), 3000),
+        }
+        for change in changes
+    ]
     return json.dumps(
         {
             "type": STAGED_WRITE_MARKER,
@@ -786,11 +821,36 @@ def _build_marker(operation_id: str, tool_name: str, summary: str, changes: list
             "rationale": rationale,
             "risk_level": _change_risk_level(changes),
             "workspace_root": current_root,
-            "changes": changes,
+            "changes": compact_changes,
             "instruction": "Requires explicit user approval before applying these file changes.",
         },
         ensure_ascii=True,
     )
+
+
+def approval_payload_for_staged_write(operation_id: str, marker: dict | None = None) -> dict:
+    staged = _load_staged_writes()
+    operation = staged.get(operation_id) or {}
+    changes = operation.get("changes")
+    if not isinstance(changes, list):
+        changes = (marker or {}).get("changes", [])
+    return {
+        "summary": operation.get("summary") or (marker or {}).get("summary"),
+        "rationale": (marker or {}).get("rationale"),
+        "riskLevel": (marker or {}).get("risk_level"),
+        "workspaceRoot": operation.get("workspace_root") or (marker or {}).get("workspace_root"),
+        "instruction": (marker or {}).get("instruction"),
+        "changes": [
+            {
+                "path": change.get("path"),
+                "mode": change.get("mode"),
+                "content": change.get("content"),
+                "preview": change.get("preview"),
+            }
+            for change in changes
+            if isinstance(change, dict)
+        ],
+    }
 
 
 def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -919,8 +979,8 @@ def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
         )
         if not output:
             return "No matches found."
-        lines = output.splitlines()[: max_search_results()]
-        return "\n".join(lines)
+        lines = [_truncate_line(line) for line in output.splitlines()[: max_search_results()]]
+        return _truncate_output("\n".join(lines))
 
     matches: list[str] = []
     for file_path in sorted(base.rglob("*")):
@@ -935,7 +995,7 @@ def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
         for idx, line in enumerate(text.splitlines(), start=1):
             if query in line:
                 rel = file_path.relative_to(workspace_root())
-                matches.append(f"{rel}:{idx}:{line}")
+                matches.append(_truncate_line(f"{rel}:{idx}:{line}"))
                 if len(matches) >= max_search_results():
                     _record_tool_activity(
                         "search",
@@ -946,7 +1006,7 @@ def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
                             "match_count": len(matches),
                         },
                     )
-                    return "\n".join(matches)
+                    return _truncate_output("\n".join(matches))
     _record_tool_activity(
         "search",
         {
@@ -956,7 +1016,7 @@ def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
             "match_count": len(matches),
         },
     )
-    return "\n".join(matches) if matches else "No matches found."
+    return _truncate_output("\n".join(matches)) if matches else "No matches found."
 
 
 @tool
@@ -964,8 +1024,8 @@ def search_code_blocks(
     query: str,
     path: str = ".",
     glob: str | None = None,
-    context_lines: int = 8,
-    max_matches: int = 8,
+    context_lines: int = 4,
+    max_matches: int = 5,
 ) -> str:
     """Search for keywords and return surrounding code blocks/snippets instead of full-file reads."""
     base = _resolve_path(path)
@@ -993,7 +1053,11 @@ def search_code_blocks(
         )
         if not output:
             return "No matching code blocks found."
-        return "\n--\n".join(blocks[:max_hits])
+        compact_blocks = [
+            "\n".join(_truncate_line(line) for line in block.splitlines())
+            for block in blocks[:max_hits]
+        ]
+        return _truncate_output("\n--\n".join(compact_blocks))
 
     blocks: list[str] = []
     for file_path in sorted(base.rglob("*")):
@@ -1011,7 +1075,10 @@ def search_code_blocks(
                 continue
             start = max(1, idx - context)
             end = min(len(lines), idx + context)
-            snippet = "\n".join(f"{line_no}: {lines[line_no - 1]}" for line_no in range(start, end + 1))
+            snippet = "\n".join(
+                _truncate_line(f"{line_no}: {lines[line_no - 1]}")
+                for line_no in range(start, end + 1)
+            )
             rel = file_path.relative_to(workspace_root())
             blocks.append(f"{rel}:{idx}\n{snippet}")
             if len(blocks) >= max_hits:
@@ -1024,7 +1091,7 @@ def search_code_blocks(
                         "match_count": len(blocks),
                     },
                 )
-                return "\n--\n".join(blocks)
+                return _truncate_output("\n--\n".join(blocks))
     _record_tool_activity(
         "code_search",
         {
@@ -1034,7 +1101,7 @@ def search_code_blocks(
             "match_count": len(blocks),
         },
     )
-    return "\n--\n".join(blocks) if blocks else "No matching code blocks found."
+    return _truncate_output("\n--\n".join(blocks)) if blocks else "No matching code blocks found."
 
 
 @tool
@@ -1053,9 +1120,18 @@ def read_file(path: str, start_line: int = 1, end_line: int = 200, force_reread:
     lines = text.splitlines()
     start = max(start_line, 1)
     end = min(max(end_line, start), len(lines))
+    requested_end = end
+    max_end = min(start + max_read_lines() - 1, len(lines))
+    end = min(end, max_end)
     snippet = lines[start - 1 : end]
-    numbered = [f"{i}: {line}" for i, line in enumerate(snippet, start=start)]
+    numbered = [_truncate_line(f"{i}: {line}") for i, line in enumerate(snippet, start=start)]
     output = "\n".join(numbered) or "(empty file)"
+    if requested_end > end:
+        output += (
+            f"\n... [read truncated at {max_read_lines()} lines; request a narrower range "
+            f"or continue at line {end + 1}]"
+        )
+    output = _truncate_output(output)
     _remember_file_read(target, start, end, len(snippet), output)
     return output
 

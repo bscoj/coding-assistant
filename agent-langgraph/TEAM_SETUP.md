@@ -102,6 +102,7 @@ Optional but commonly useful:
 
 ```bash
 AGENT_AVAILABLE_MODEL_ENDPOINTS=<endpoint-a>,<endpoint-b>
+MEMORY_MODE=work
 MEMORY_MODEL_ENDPOINT=<optional-memory-endpoint>
 USER_PROFILE_MODEL_ENDPOINT=<optional-profile-endpoint>
 MLFLOW_EXPERIMENT_ID=<optional-if-using-tracing-or-feedback>
@@ -186,8 +187,12 @@ The agent is intentionally approval-based for file writes.
 ### Local memory
 
 - local conversation memory
+- Work mode: keeps more recent raw messages in context before summarizing older turns
+- Balanced mode: keeps fewer raw messages to reduce token usage
 - shared user profile
 - project profile per repo
+
+Use `Profile -> Work mode memory` in the UI to switch modes. Work mode is better for active coding because generated code, file paths, and implementation decisions stay in raw context longer.
 
 ### Project update skill
 

@@ -74,6 +74,7 @@ import {
   updateLocalChatTitleById,
   updateLocalChatVisiblityById,
 } from '../lib/local-chat-store';
+import { getLocalMemoryConfig } from '../lib/local-app-settings';
 
 export const chatRouter: RouterType = Router();
 
@@ -386,9 +387,11 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       ignoreIncompleteToolCalls: true,
     });
     const repo = getLocalRepoConfig();
+    const memory = getLocalMemoryConfig();
     const requestHeaders = {
       [CONTEXT_HEADER_CONVERSATION_ID]: id,
       [CONTEXT_HEADER_USER_ID]: session.user.email ?? session.user.id,
+      'x-codex-memory-mode': memory.mode,
       ...(selectedChatModel
         ? { 'x-codex-model-endpoint': selectedChatModel }
         : {}),
@@ -653,9 +656,11 @@ chatRouter.post('/:id/approval', requireAuth, async (req: Request, res: Response
   }
 
   const repo = getLocalRepoConfig();
+  const memory = getLocalMemoryConfig();
 
   const sharedHeaders = {
     'Content-Type': 'application/json',
+    'x-codex-memory-mode': memory.mode,
     ...(repo.path
       ? { 'x-codex-workspace-root': repo.path }
       : {}),

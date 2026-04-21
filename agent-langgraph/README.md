@@ -119,9 +119,14 @@ That guide covers:
 ### Local memory
 
 - conversation memory is stored locally in SQLite
+- Work mode keeps a larger recent raw-message window before summarizing older turns
+- Balanced mode keeps a smaller raw window to reduce token usage
 - user profile is stored locally as JSON
 - project profile is stored locally as JSON
 - local chat history can be stored without a database
+
+You can switch memory behavior from `Profile -> Work mode memory`.
+Use Work mode for real coding sessions where the agent needs to remember generated code, file paths, decisions, and implementation details across a longer thread.
 
 ### Project update skill
 
@@ -153,6 +158,9 @@ Most important settings:
 - `DATABRICKS_HOST` if needed
 - `AGENT_MODEL_ENDPOINT`
 - `AGENT_AVAILABLE_MODEL_ENDPOINTS`
+- `MEMORY_MODE` (`work` or `balanced`)
+- `MEMORY_WORK_RECENT_MESSAGES`
+- `MEMORY_RECENT_MESSAGES`
 - `MEMORY_MODEL_ENDPOINT` optional
 - `USER_PROFILE_MODEL_ENDPOINT` optional
 - `CHAT_APP_SERVER_PORT`
