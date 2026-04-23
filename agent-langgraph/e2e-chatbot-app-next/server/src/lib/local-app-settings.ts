@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { readEnvFile, resolveAgentRoot } from './local-agent-config';
 
 export type MemoryMode = 'balanced' | 'work';
+export type ContextMode = 'personalized' | 'fresh';
 
 export interface LocalMemoryConfig {
   mode: MemoryMode;
@@ -12,8 +13,13 @@ export interface LocalMemoryConfig {
   maxSummaryWords: number;
 }
 
+export interface LocalContextConfig {
+  mode: ContextMode;
+}
+
 interface LocalAppSettings {
   memoryMode?: MemoryMode;
+  contextMode?: ContextMode;
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -26,6 +32,10 @@ function ensureStoreDir() {
 
 function normalizeMemoryMode(value: unknown): MemoryMode {
   return value === 'balanced' ? 'balanced' : 'work';
+}
+
+function normalizeContextMode(value: unknown): ContextMode {
+  return value === 'fresh' ? 'fresh' : 'personalized';
 }
 
 function readSettings(): LocalAppSettings {
@@ -91,4 +101,23 @@ export function setLocalMemoryMode(mode: MemoryMode): LocalMemoryConfig {
     memoryMode: normalizeMemoryMode(mode),
   });
   return getLocalMemoryConfig();
+}
+
+export function getLocalContextConfig(): LocalContextConfig {
+  const env = envValues();
+  const settings = readSettings();
+  return {
+    mode: normalizeContextMode(
+      settings.contextMode ?? process.env.LOCAL_CONTEXT_MODE ?? env.CONTEXT_MODE,
+    ),
+  };
+}
+
+export function setLocalContextMode(mode: ContextMode): LocalContextConfig {
+  const settings = readSettings();
+  writeSettings({
+    ...settings,
+    contextMode: normalizeContextMode(mode),
+  });
+  return getLocalContextConfig();
 }

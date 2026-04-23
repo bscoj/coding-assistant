@@ -110,7 +110,7 @@ export function ProfileSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { repo, storage, memory, setMemoryMode } = useAppConfig();
+  const { repo, storage, memory, context, setMemoryMode, setContextMode } = useAppConfig();
   const [scope, setScope] = useState<ProfileScope>('global');
   const [profile, setProfile] = useState<ProfileDocument>(EMPTY_PROFILE);
   const [draftEntries, setDraftEntries] = useState<ProfileEntry[]>([]);
@@ -388,6 +388,46 @@ export function ProfileSheet({
                   <div className="mt-1 font-medium text-white/80">
                     {memory?.maxSummaryWords ?? '-'} words
                   </div>
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 rounded-2xl border border-sky-300/15 bg-sky-300/[0.04] p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm font-medium text-white/90">
+                    Fresh session
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-white/50">
+                    Ignore durable user and project profile memory for clean brainstorming.
+                    The current chat can still remember itself.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={context?.mode === 'fresh'}
+                  onClick={() =>
+                    setContextMode(context?.mode === 'fresh' ? 'personalized' : 'fresh')
+                  }
+                  className={`relative h-7 w-12 shrink-0 rounded-full border transition ${
+                    context?.mode === 'fresh'
+                      ? 'border-sky-300/45 bg-sky-300/25'
+                      : 'border-white/[0.12] bg-white/[0.05]'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-1 size-5 rounded-full bg-white transition ${
+                      context?.mode === 'fresh' ? 'left-6' : 'left-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              <div className="mt-3 rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2 text-xs">
+                <div className="uppercase tracking-[0.12em] text-white/35">Context source</div>
+                <div className="mt-1 font-medium text-white/80">
+                  {context?.mode === 'fresh'
+                    ? 'Fresh: no durable profile injection'
+                    : 'Personalized: user and project profiles enabled'}
                 </div>
               </div>
             </div>

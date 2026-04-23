@@ -21,12 +21,17 @@ interface StorageConfig {
 }
 
 export type MemoryMode = 'balanced' | 'work';
+export type ContextMode = 'personalized' | 'fresh';
 
 interface MemoryConfig {
   mode: MemoryMode;
   recentMessages: number;
   summaryThresholdMessages: number;
   maxSummaryWords: number;
+}
+
+interface ContextConfig {
+  mode: ContextMode;
 }
 
 interface ConfigResponse {
@@ -37,6 +42,7 @@ interface ConfigResponse {
   repo: RepoConfig;
   models: ModelConfig;
   memory: MemoryConfig;
+  context: ContextConfig;
   storage: StorageConfig;
   obo?: {
     missingScopes: string[];
@@ -54,9 +60,11 @@ interface AppConfigContextType {
   hasRepoConfigured: boolean;
   models: ModelConfig | undefined;
   memory: MemoryConfig | undefined;
+  context: ContextConfig | undefined;
   storage: StorageConfig | undefined;
   setRepoPath: (path: string | null) => Promise<void>;
   setMemoryMode: (mode: MemoryMode) => Promise<void>;
+  setContextMode: (mode: ContextMode) => Promise<void>;
 }
 
 const AppConfigContext = createContext<AppConfigContextType | undefined>(
@@ -117,6 +125,27 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  async function setContextMode(mode: ContextMode) {
+    const response = await fetchWithErrorHandlers('/api/config/context', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ mode }),
+    });
+    const payload = (await response.json()) as { context: ContextConfig };
+    await mutate(
+      (current) =>
+        current
+          ? {
+              ...current,
+              context: payload.context,
+            }
+          : current,
+      false,
+    );
+  }
+
   const value: AppConfigContextType = {
     config: data,
     isLoading,
@@ -129,9 +158,11 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     hasRepoConfigured: !!data?.repo?.path,
     models: data?.models,
     memory: data?.memory,
+    context: data?.context,
     storage: data?.storage,
     setRepoPath,
     setMemoryMode,
+    setContextMode,
   };
 
   return (

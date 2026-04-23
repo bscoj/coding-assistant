@@ -103,6 +103,7 @@ Optional but commonly useful:
 ```bash
 AGENT_AVAILABLE_MODEL_ENDPOINTS=<endpoint-a>,<endpoint-b>
 MEMORY_MODE=work
+CONTEXT_MODE=personalized
 MEMORY_MODEL_ENDPOINT=<optional-memory-endpoint>
 USER_PROFILE_MODEL_ENDPOINT=<optional-profile-endpoint>
 MLFLOW_EXPERIMENT_ID=<optional-if-using-tracing-or-feedback>
@@ -193,6 +194,8 @@ The agent is intentionally approval-based for file writes.
 - project profile per repo
 
 Use `Profile -> Work mode memory` in the UI to switch modes. Work mode is better for active coding because generated code, file paths, and implementation decisions stay in raw context longer.
+
+Use `Profile -> Fresh session` for clean ideation. Fresh mode ignores durable user/project profile memory and does not write new profile facts, while still keeping the current chat coherent.
 
 ### Project update skill
 

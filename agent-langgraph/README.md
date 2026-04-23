@@ -128,6 +128,8 @@ That guide covers:
 You can switch memory behavior from `Profile -> Work mode memory`.
 Use Work mode for real coding sessions where the agent needs to remember generated code, file paths, decisions, and implementation details across a longer thread.
 
+Use `Profile -> Fresh session` when you want a clean chat that ignores durable user/project profile memory. Fresh mode still lets the current chat remember itself, but it does not inject or update cross-chat profile facts.
+
 ### Project update skill
 
 The repo includes one runtime skill today:
@@ -159,6 +161,7 @@ Most important settings:
 - `AGENT_MODEL_ENDPOINT`
 - `AGENT_AVAILABLE_MODEL_ENDPOINTS`
 - `MEMORY_MODE` (`work` or `balanced`)
+- `CONTEXT_MODE` (`personalized` or `fresh`)
 - `MEMORY_WORK_RECENT_MESSAGES`
 - `MEMORY_RECENT_MESSAGES`
 - `MEMORY_MODEL_ENDPOINT` optional

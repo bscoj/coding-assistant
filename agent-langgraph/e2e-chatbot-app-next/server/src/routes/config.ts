@@ -16,8 +16,11 @@ import {
   getLocalAgentStorageConfig,
 } from '../lib/local-agent-config';
 import {
+  getLocalContextConfig,
   getLocalMemoryConfig,
+  setLocalContextMode,
   setLocalMemoryMode,
+  type ContextMode,
   type MemoryMode,
 } from '../lib/local-app-settings';
 import { pickFolder } from '../lib/folder-picker';
@@ -61,6 +64,7 @@ configRouter.get('/', async (req: Request, res: Response) => {
   const models = getLocalAgentModelConfig();
   const storage = getLocalAgentStorageConfig();
   const memory = getLocalMemoryConfig();
+  const context = getLocalContextConfig();
 
   let missingScopes = oboInfo.endpointRequiredScopes;
 
@@ -84,6 +88,7 @@ configRouter.get('/', async (req: Request, res: Response) => {
     repo,
     models,
     memory,
+    context,
     storage: {
       agentRoot: storage.agentRoot,
       conversationMemoryDbPath: storage.conversationMemoryDbPath,
@@ -93,6 +98,21 @@ configRouter.get('/', async (req: Request, res: Response) => {
       missingScopes,
     },
   });
+});
+
+configRouter.put('/context', async (req: Request, res: Response) => {
+  const mode = req.body?.mode;
+
+  if (mode !== 'personalized' && mode !== 'fresh') {
+    res.status(400).json({
+      code: 'bad_request:api',
+      cause: 'mode must be personalized or fresh',
+    });
+    return;
+  }
+
+  const context = setLocalContextMode(mode as ContextMode);
+  res.json({ context });
 });
 
 configRouter.put('/memory', async (req: Request, res: Response) => {

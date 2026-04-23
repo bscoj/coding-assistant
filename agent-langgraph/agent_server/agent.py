@@ -123,6 +123,11 @@ def requested_memory_mode() -> str:
     return normalize_memory_mode(get_request_headers().get("x-codex-memory-mode"))
 
 
+def requested_context_mode() -> str:
+    requested = (get_request_headers().get("x-codex-context-mode") or "").strip().lower()
+    return "fresh" if requested == "fresh" else "personalized"
+
+
 @tool
 def get_current_time() -> str:
     """Get the current date and time."""
@@ -174,13 +179,18 @@ async def stream_handler(
     request_items = [i.model_dump() for i in request.input]
     turn_items = current_turn_items(request_items)
     current_workspace_root = str(workspace_root())
-    user_profile_block = "\n\n".join(build_profile_blocks(current_workspace_root)) or None
     record_task_request(turn_items)
     task_scratchpad_block = build_task_scratchpad_block()
     tool_memory_block = build_tool_memory_block()
     skill_blocks = build_skill_blocks(turn_items)
     conversation_id = get_session_id(request)
     memory_mode = requested_memory_mode()
+    context_mode = requested_context_mode()
+    user_profile_block = (
+        "\n\n".join(build_profile_blocks(current_workspace_root)) or None
+        if context_mode != "fresh"
+        else None
+    )
     approval_request_id, approval_approved = detect_approval_response(turn_items)
     if approval_request_id and approval_approved is True:
         text = apply_staged_write_by_approval_id(approval_request_id)
@@ -244,7 +254,7 @@ async def stream_handler(
                 logger.exception("Failed to persist or refresh conversation memory.")
             else:
                 _run_background(maybe_refresh_memory(conversation_id, mode=memory_mode))
-        if output_items:
+        if output_items and context_mode != "fresh":
             try:
                 interaction_items = turn_items + assistant_outputs_to_items(output_items)
             except Exception:
