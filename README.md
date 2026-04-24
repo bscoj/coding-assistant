@@ -21,12 +21,14 @@ Coding Buddy is built to help with day-to-day repo work:
 - propose file edits with explicit approval
 - keep local conversation memory
 - keep shared user and project preferences
+- keep a teach mode that explains why, tradeoffs, and next validation steps while still staying practical
 - load repo-native `AGENTS.md` / `CLAUDE.md` guidance from the selected workspace
 - apply focused workflow playbooks for exploration, implementation, debugging, and review
 - emit local runtime hook events for session/tool tracing
 - help with daily project updates through the `project-update` skill
 - coach through ML design, experiment review, and production readiness with on-demand skills
 - keep a repo-aware validated SQL memory store for known-good queries, tables, and joins
+- keep a curated analytics context store for trusted tables, joins, and metric definitions
 
 ## Local Architecture
 
@@ -145,6 +147,7 @@ See [HOOKS.md](HOOKS.md) for the hook file format.
 - Raw mode keeps far more of the thread verbatim for maximum continuity
 - the agent maintains a structured task journal for the active chat
 - the agent automatically pins high-value turns like key code, decisions, and debugging discoveries
+- the memory layer now also deterministically captures code blocks, file paths, and real error messages from recent turns so they are less likely to be dropped
 - user profile is stored locally as JSON
 - project profile is stored locally as JSON
 - local chat history can be stored without a database
@@ -153,6 +156,8 @@ You can switch memory behavior from `Profile -> Conversation memory`.
 Use Work mode for most repo work. Use Raw when you want the closest thing to a long, mostly uncompressed GPT session.
 
 Use `Profile -> Fresh session` when you want a clean chat that ignores durable user/project profile memory. Fresh mode still lets the current chat remember itself, but it does not inject or update cross-chat profile facts.
+
+Use `Profile -> Teach mode` when you want the assistant to keep solving directly but also explain the why, main tradeoff, and next best validation step.
 
 ### Project update skill
 
@@ -186,6 +191,7 @@ See:
 
 - trusted SQL patterns are stored locally per selected repo
 - saved patterns automatically extract tables and join clauses
+- saved trusted SQL also seeds the analytics context store with reusable table and join knowledge
 - the agent can search those patterns before doing broad repo search
 - this is designed to help with repeated bronze/silver/gold table selection and
   join recovery
@@ -202,6 +208,25 @@ Current SQL memory tools:
 If you tell the agent a query is correct or trusted, it can save that query into
 the validated store for reuse later.
 
+### Curated analytics context and SQL verification
+
+- trusted analytics tables, joins, and metrics are stored locally per selected repo
+- the agent can search this curated context before broad repo search
+- the SQL verifier checks a candidate query against curated joins, known tables, and validated SQL patterns
+- this is meant to reduce table/join rediscovery time and catch risky SQL before you run it
+
+Current analytics tools:
+
+- `analytics_context_overview()`
+- `search_analytics_tables()`
+- `search_analytics_joins()`
+- `search_analytics_metrics()`
+- `suggest_sql_starting_points()`
+- `verify_sql_query()`
+- `register_analytics_table()`
+- `register_analytics_join()`
+- `register_analytics_metric()`
+
 ## Configuration
 
 The main local config lives in:
@@ -217,7 +242,11 @@ Most important settings:
 - `AGENT_AVAILABLE_MODEL_ENDPOINTS`
 - `MEMORY_MODE` (`lean`, `work`, or `raw`)
 - `CONTEXT_MODE` (`personalized` or `fresh`)
+- `RESPONSE_MODE` (`direct` or `teach`)
 - `MEMORY_WORK_RECENT_MESSAGES`
+- `MEMORY_WORKING_SET_FALLBACK_MESSAGES`
+- `SQL_MEMORY_DB_PATH`
+- `ANALYTICS_CONTEXT_DB_PATH`
 - `MEMORY_RAW_RECENT_MESSAGES`
 - `MEMORY_RECENT_MESSAGES`
 - `MEMORY_MODEL_ENDPOINT` optional

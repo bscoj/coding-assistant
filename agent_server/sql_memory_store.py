@@ -77,8 +77,12 @@ def extract_tables(sql: str) -> list[str]:
 
 
 def extract_join_clauses(sql: str) -> list[str]:
+    return [detail["rendered"] for detail in extract_join_details(sql)]
+
+
+def extract_join_details(sql: str) -> list[dict[str, str]]:
     seen: set[str] = set()
-    joins: list[str] = []
+    joins: list[dict[str, str]] = []
     for match in JOIN_PATTERN.finditer(sql):
         join_type = " ".join(match.group(1).split()).strip().lower()
         table = _clean_identifier(match.group(2))
@@ -90,8 +94,40 @@ def extract_join_clauses(sql: str) -> list[str]:
         if lowered in seen:
             continue
         seen.add(lowered)
-        joins.append(rendered)
+        joins.append(
+            {
+                "join_type": join_type,
+                "table": table,
+                "condition": clause,
+                "rendered": rendered,
+            }
+        )
     return joins[:20]
+
+
+def extract_join_pairs(sql: str) -> list[dict[str, str]]:
+    tables = extract_tables(sql)
+    join_details = extract_join_details(sql)
+    if not tables or not join_details:
+        return []
+
+    pairs: list[dict[str, str]] = []
+    left_table = tables[0]
+    for detail in join_details:
+        right_table = detail["table"]
+        if not right_table:
+            continue
+        pairs.append(
+            {
+                "left_table": left_table,
+                "right_table": right_table,
+                "join_type": detail["join_type"],
+                "join_condition": detail["condition"],
+                "rendered": detail["rendered"],
+            }
+        )
+        left_table = right_table
+    return pairs[:20]
 
 
 def _matches_table_or_join(pattern: dict[str, Any], needle: str) -> bool:

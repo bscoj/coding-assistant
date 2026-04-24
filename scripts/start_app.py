@@ -173,7 +173,7 @@ class ProcessManager:
             return frontend_dir
 
         print(f"ERROR: Frontend directory not found at {frontend_dir}")
-        print("The UI is expected to live inside agent-langgraph/e2e-chatbot-app-next.")
+        print("The UI is expected to live at the repo root inside e2e-chatbot-app-next.")
         return None
 
     def ui_server_port(self) -> int:

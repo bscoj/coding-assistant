@@ -5,6 +5,7 @@ import { readEnvFile, resolveAgentRoot } from './local-agent-config';
 
 export type MemoryMode = 'lean' | 'work' | 'raw';
 export type ContextMode = 'personalized' | 'fresh';
+export type ResponseMode = 'direct' | 'teach';
 
 export interface LocalMemoryConfig {
   mode: MemoryMode;
@@ -17,9 +18,14 @@ export interface LocalContextConfig {
   mode: ContextMode;
 }
 
+export interface LocalResponseConfig {
+  mode: ResponseMode;
+}
+
 interface LocalAppSettings {
   memoryMode?: MemoryMode;
   contextMode?: ContextMode;
+  responseMode?: ResponseMode;
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -38,6 +44,10 @@ function normalizeMemoryMode(value: unknown): MemoryMode {
 
 function normalizeContextMode(value: unknown): ContextMode {
   return value === 'fresh' ? 'fresh' : 'personalized';
+}
+
+function normalizeResponseMode(value: unknown): ResponseMode {
+  return value === 'teach' ? 'teach' : 'direct';
 }
 
 function readSettings(): LocalAppSettings {
@@ -131,4 +141,23 @@ export function setLocalContextMode(mode: ContextMode): LocalContextConfig {
     contextMode: normalizeContextMode(mode),
   });
   return getLocalContextConfig();
+}
+
+export function getLocalResponseConfig(): LocalResponseConfig {
+  const env = envValues();
+  const settings = readSettings();
+  return {
+    mode: normalizeResponseMode(
+      settings.responseMode ?? process.env.LOCAL_RESPONSE_MODE ?? env.RESPONSE_MODE,
+    ),
+  };
+}
+
+export function setLocalResponseMode(mode: ResponseMode): LocalResponseConfig {
+  const settings = readSettings();
+  writeSettings({
+    ...settings,
+    responseMode: normalizeResponseMode(mode),
+  });
+  return getLocalResponseConfig();
 }

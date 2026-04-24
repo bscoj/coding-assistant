@@ -32,6 +32,7 @@ from agent_server.filesystem_tools import (
     workspace_root,
 )
 from agent_server.chat_history_tools import CHAT_HISTORY_TOOLS
+from agent_server.analytics_context_tools import ANALYTICS_CONTEXT_TOOLS
 from agent_server.memory_pipeline import (
     assistant_outputs_to_items,
     build_optimized_messages,
@@ -73,8 +74,10 @@ Core behavior:
 - Minimize redundant tool use. Reuse recent file reads and targeted searches instead of rereading whole files.
 - Prefer workspace_overview(), find_files_by_name(), recent_file_reads(), targeted search_files(), and search_code_blocks() before broad reads.
 - For ML or data-science repos, prefer ml_repo_overview() early so you can orient on training, evaluation, data pipelines, serving, and likely risks in one pass.
-- For SQL or analytics tasks, prefer validated_sql_store_overview(), search_validated_sql_patterns(), and search_validated_sql_by_table_or_join() before broad repo search so you can reuse trusted tables and joins.
+- For SQL or analytics tasks, prefer analytics_context_overview(), search_analytics_tables(), search_analytics_joins(), search_analytics_metrics(), suggest_sql_starting_points(), validated_sql_store_overview(), search_validated_sql_patterns(), and search_validated_sql_by_table_or_join() before broad repo search so you can reuse trusted tables, joins, and metrics.
 - When the user confirms a SQL query is correct or trusted, save it with save_validated_sql_pattern() or save_validated_sql_file().
+- Only register analytics table, join, or metric context when the user explicitly asks to save or curate trusted analytics knowledge.
+- Before finalizing important SQL, run verify_sql_query() and use the findings to improve the answer.
 - If the user refers to code, errors, or decisions from earlier in this same chat, use search_chat_history() or read_chat_turn() before guessing.
 - Use injected skill blocks when they are present for task-specific workflows.
 - Do not assume a skill is active unless it was injected for the current request.
@@ -82,6 +85,7 @@ Core behavior:
 - In exploration mode, do not stop after one or two file reads if important gaps remain. Chain a few high-signal tool calls together, then synthesize.
 - Only stop exploration early if you hit a real blocker or the user explicitly wants a quick first-pass answer.
 - When explaining ML work, teach while you solve: state what the component does, why it matters, common failure modes, and the next best validation step.
+- After changing code, run the most targeted verification you reasonably can and report what you checked.
 
 File changes:
 - Use staged write tools for all file edits.
@@ -144,6 +148,23 @@ def requested_context_mode() -> str:
     return "fresh" if requested == "fresh" else "personalized"
 
 
+def requested_response_mode() -> str:
+    requested = (get_request_headers().get("x-codex-response-mode") or "").strip().lower()
+    return "teach" if requested == "teach" else "direct"
+
+
+def response_style_block() -> str | None:
+    if requested_response_mode() != "teach":
+        return None
+    return """Teach mode
+
+Solve the task directly, but also add concise teaching value:
+- briefly explain why the chosen approach is right
+- call out the main tradeoff or failure mode to watch
+- end with the next best validation step or learning takeaway
+- keep the explanation practical and compact"""
+
+
 @tool
 def get_current_time() -> str:
     """Get the current date and time."""
@@ -167,7 +188,13 @@ async def init_agent(
     workspace_root_override: str | None = None,
     workspace_client: Optional[WorkspaceClient] = None,
 ):
-    tools = [get_current_time, *FILESYSTEM_TOOLS, *CHAT_HISTORY_TOOLS, *SQL_MEMORY_TOOLS]
+    tools = [
+        get_current_time,
+        *FILESYSTEM_TOOLS,
+        *CHAT_HISTORY_TOOLS,
+        *ANALYTICS_CONTEXT_TOOLS,
+        *SQL_MEMORY_TOOLS,
+    ]
     tools = wrap_tools_with_runtime_hooks(tools, workspace_root_override)
     # To use MCP server tools instead, replace the line above with:
     #   mcp_client = init_mcp_client(workspace_client or sp_workspace_client)
@@ -210,6 +237,7 @@ async def stream_handler(
             "conversation_id": get_session_id(request),
             "memory_mode": requested_memory_mode(),
             "context_mode": requested_context_mode(),
+            "response_mode": requested_response_mode(),
         },
     )
     task_scratchpad_block = build_task_scratchpad_block()
@@ -224,6 +252,8 @@ async def stream_handler(
     conversation_id = get_session_id(request)
     memory_mode = requested_memory_mode()
     context_mode = requested_context_mode()
+    response_mode = requested_response_mode()
+    style_block = response_style_block()
     user_profile_block = (
         "\n\n".join(build_profile_blocks(current_workspace_root)) or None
         if context_mode != "fresh"
@@ -286,6 +316,7 @@ async def stream_handler(
             tool_memory_block=tool_memory_block,
             skill_blocks=skill_blocks,
             workflow_blocks=workflow_blocks,
+            response_style_block=style_block,
         )
     else:
         optimized_input = build_optimized_messages(
@@ -299,6 +330,7 @@ async def stream_handler(
             tool_memory_block=tool_memory_block,
             skill_blocks=skill_blocks,
             workflow_blocks=workflow_blocks,
+            response_style_block=style_block,
         )
 
     # By default, uses service principal credentials.
@@ -313,6 +345,7 @@ async def stream_handler(
                 "conversation_id": conversation_id,
                 "memory_mode": memory_mode,
                 "context_mode": context_mode,
+                "response_mode": response_mode,
                 "repo_instruction_blocks": len(repo_instruction_blocks),
                 "workflow_blocks": len(workflow_blocks),
                 "skill_blocks": len(skill_blocks),

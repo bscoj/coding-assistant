@@ -17,11 +17,14 @@ interface ModelConfig {
 interface StorageConfig {
   agentRoot: string;
   conversationMemoryDbPath: string;
+  sqlMemoryDbPath: string;
+  analyticsContextDbPath: string;
   localChatHistoryPath: string;
 }
 
 export type MemoryMode = 'lean' | 'work' | 'raw';
 export type ContextMode = 'personalized' | 'fresh';
+export type ResponseMode = 'direct' | 'teach';
 
 interface MemoryConfig {
   mode: MemoryMode;
@@ -34,6 +37,10 @@ interface ContextConfig {
   mode: ContextMode;
 }
 
+interface ResponseConfig {
+  mode: ResponseMode;
+}
+
 interface ConfigResponse {
   features: {
     chatHistory: boolean;
@@ -43,6 +50,7 @@ interface ConfigResponse {
   models: ModelConfig;
   memory: MemoryConfig;
   context: ContextConfig;
+  response: ResponseConfig;
   storage: StorageConfig;
   obo?: {
     missingScopes: string[];
@@ -61,10 +69,12 @@ interface AppConfigContextType {
   models: ModelConfig | undefined;
   memory: MemoryConfig | undefined;
   context: ContextConfig | undefined;
+  response: ResponseConfig | undefined;
   storage: StorageConfig | undefined;
   setRepoPath: (path: string | null) => Promise<void>;
   setMemoryMode: (mode: MemoryMode) => Promise<void>;
   setContextMode: (mode: ContextMode) => Promise<void>;
+  setResponseMode: (mode: ResponseMode) => Promise<void>;
 }
 
 const AppConfigContext = createContext<AppConfigContextType | undefined>(
@@ -146,6 +156,27 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  async function setResponseMode(mode: ResponseMode) {
+    const response = await fetchWithErrorHandlers('/api/config/response', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ mode }),
+    });
+    const payload = (await response.json()) as { response: ResponseConfig };
+    await mutate(
+      (current) =>
+        current
+          ? {
+              ...current,
+              response: payload.response,
+            }
+          : current,
+      false,
+    );
+  }
+
   const value: AppConfigContextType = {
     config: data,
     isLoading,
@@ -159,10 +190,12 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     models: data?.models,
     memory: data?.memory,
     context: data?.context,
+    response: data?.response,
     storage: data?.storage,
     setRepoPath,
     setMemoryMode,
     setContextMode,
+    setResponseMode,
   };
 
   return (

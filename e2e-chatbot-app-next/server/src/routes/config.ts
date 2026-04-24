@@ -18,10 +18,13 @@ import {
 import {
   getLocalContextConfig,
   getLocalMemoryConfig,
+  getLocalResponseConfig,
   setLocalContextMode,
   setLocalMemoryMode,
+  setLocalResponseMode,
   type ContextMode,
   type MemoryMode,
+  type ResponseMode,
 } from '../lib/local-app-settings';
 import { pickFolder } from '../lib/folder-picker';
 import {
@@ -65,6 +68,7 @@ configRouter.get('/', async (req: Request, res: Response) => {
   const storage = getLocalAgentStorageConfig();
   const memory = getLocalMemoryConfig();
   const context = getLocalContextConfig();
+  const responseMode = getLocalResponseConfig();
 
   let missingScopes = oboInfo.endpointRequiredScopes;
 
@@ -89,9 +93,12 @@ configRouter.get('/', async (req: Request, res: Response) => {
     models,
     memory,
     context,
+    response: responseMode,
     storage: {
       agentRoot: storage.agentRoot,
       conversationMemoryDbPath: storage.conversationMemoryDbPath,
+      sqlMemoryDbPath: storage.sqlMemoryDbPath,
+      analyticsContextDbPath: storage.analyticsContextDbPath,
       localChatHistoryPath: getLocalChatHistoryPath(),
     },
     obo: {
@@ -128,6 +135,21 @@ configRouter.put('/memory', async (req: Request, res: Response) => {
 
   const memory = setLocalMemoryMode(mode as MemoryMode);
   res.json({ memory });
+});
+
+configRouter.put('/response', async (req: Request, res: Response) => {
+  const mode = req.body?.mode;
+
+  if (mode !== 'direct' && mode !== 'teach') {
+    res.status(400).json({
+      code: 'bad_request:api',
+      cause: 'mode must be direct or teach',
+    });
+    return;
+  }
+
+  const responseMode = setLocalResponseMode(mode as ResponseMode);
+  res.json({ response: responseMode });
 });
 
 configRouter.put('/repo', async (req: Request, res: Response) => {

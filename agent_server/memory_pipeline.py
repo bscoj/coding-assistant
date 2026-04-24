@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import asdict
 from typing import Any
 
@@ -16,6 +17,7 @@ from agent_server.memory_models import (
 )
 from agent_server.memory_models import StoredMessage
 from agent_server.memory_store import get_memory_store, normalize_item
+from agent_server.sql_memory_store import extract_tables
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,19 @@ DEFAULT_WORK_MAX_SUMMARY_WORDS = 1000
 DEFAULT_RAW_MAX_SUMMARY_WORDS = 1600
 DEFAULT_MEMORY_MODE = "work"
 DEFAULT_TOOL_SUMMARY_MAX_CHARS = 1200
+DEFAULT_WORKING_SET_FALLBACK_MESSAGES = 24
+
+CODE_FENCE_PATTERN = re.compile(r"```(?P<lang>[A-Za-z0-9_+-]*)\n(?P<code>.*?)(?:```|$)", re.S)
+PATH_PATTERN = re.compile(
+    r"(?<![\w/])(?:"
+    r"(?:[A-Za-z0-9._-]+/)+[A-Za-z0-9._-]+(?:\.[A-Za-z0-9._-]+)?"
+    r"|"
+    r"[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|sql|yaml|yml|json|toml|md|sh|txt|ipynb)"
+    r")(?![\w/])"
+)
+ERROR_LINE_PATTERN = re.compile(
+    r"(?im)^(?:traceback.*|.*(?:error|exception|failed|failure|permission denied|typeerror|valueerror|filenotfounderror).*)$"
+)
 
 
 def memory_enabled() -> bool:
@@ -127,6 +142,203 @@ def _dedupe_compact_list(values: list[Any], limit: int) -> list[str]:
         if len(output) >= limit:
             break
     return output
+
+
+def working_set_fallback_messages(mode: str | None = None) -> int:
+    return min(
+        recent_messages_limit(mode),
+        _env_int(
+            "MEMORY_WORKING_SET_FALLBACK_MESSAGES",
+            DEFAULT_WORKING_SET_FALLBACK_MESSAGES,
+        ),
+    )
+
+
+def _extract_paths(text: str, limit: int = 12) -> list[str]:
+    values: list[str] = []
+    for match in PATH_PATTERN.finditer(text):
+        candidate = match.group(0).strip("`'\"()[]{}.,:;")
+        if len(candidate) > 180:
+            continue
+        values.append(candidate)
+    return _dedupe_compact_list(values, limit)
+
+
+def _interesting_code_line(code: str) -> str:
+    for raw_line in code.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(("#", "//", "--", "/*", "*")):
+            continue
+        return line[:160]
+    return ""
+
+
+def _describe_code_block(language: str, code: str) -> str:
+    lowered_language = (language or "code").strip().lower()
+    if lowered_language == "sql":
+        tables = extract_tables(code)
+        if tables:
+            return f"sql query using {', '.join(tables[:3])}"
+        return "sql query"
+
+    patterns = [
+        (re.compile(r"(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)"), "python function"),
+        (re.compile(r"(?m)^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)"), "class"),
+        (re.compile(r"(?m)^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)"), "function"),
+        (
+            re.compile(
+                r"(?m)^\s*(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?\("
+            ),
+            "variable function",
+        ),
+        (
+            re.compile(r"(?im)^\s*create(?:\s+or\s+replace)?\s+view\s+([A-Za-z0-9_.-]+)"),
+            "view definition",
+        ),
+        (
+            re.compile(r"(?im)^\s*create(?:\s+or\s+replace)?\s+table\s+([A-Za-z0-9_.-]+)"),
+            "table definition",
+        ),
+    ]
+    for pattern, label in patterns:
+        match = pattern.search(code)
+        if match:
+            return f"{label} {match.group(1)}"
+
+    first_line = _interesting_code_line(code)
+    if first_line:
+        return f"{lowered_language or 'code'}: {first_line}"
+    return lowered_language or "code"
+
+
+def _compact_excerpt(text: str, limit: int = 220) -> str:
+    compact = " ".join(text.split()).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit].rstrip() + " ..."
+
+
+def _derive_structured_memory_signals(
+    messages: list[StoredMessage],
+    conversation_id: str,
+    repo: str | None,
+) -> tuple[TaskJournal, list[PinnedTurnUpsert]]:
+    objective = ""
+    status = "planning"
+    files_inspected: list[str] = []
+    files_changed: list[str] = []
+    generated_code_artifacts: list[str] = []
+    known_errors: list[str] = []
+    pins: list[PinnedTurnUpsert] = []
+
+    for message in messages:
+        item = json.loads(message.content_json)
+        text = item_text(item).strip()
+        lowered = text.lower()
+        if message.role == "user" and text:
+            objective = _compact_excerpt(text, 260)
+            if any(token in lowered for token in ("debug", "error", "failing", "broken")):
+                status = "debugging"
+            elif any(token in lowered for token in ("implement", "build", "add", "change", "update", "fix")):
+                status = "implementing"
+            elif any(token in lowered for token in ("explore", "inspect", "understand", "look at", "figure out")):
+                status = "exploring"
+
+        paths = _extract_paths(text, limit=16)
+        if paths:
+            files_inspected.extend(paths)
+            if any(token in lowered for token in ("write", "written", "update", "updated", "create", "created", "apply", "applied", "patch", "edit")):
+                files_changed.extend(paths)
+
+        for raw_error in ERROR_LINE_PATTERN.findall(text):
+            excerpt = _compact_excerpt(raw_error, 220)
+            if not excerpt:
+                continue
+            known_errors.append(excerpt)
+            pins.append(
+                PinnedTurnUpsert(
+                    turn_index=message.turn_index,
+                    kind="error",
+                    summary=excerpt[:280],
+                    content_excerpt=_compact_excerpt(text, 360),
+                )
+            )
+
+        for match in CODE_FENCE_PATTERN.finditer(text):
+            language = (match.group("lang") or "code").strip().lower()
+            code = (match.group("code") or "").strip()
+            if not code:
+                continue
+            descriptor = _describe_code_block(language, code)
+            generated_code_artifacts.append(descriptor)
+            pins.append(
+                PinnedTurnUpsert(
+                    turn_index=message.turn_index,
+                    kind="code",
+                    summary=descriptor[:280],
+                    content_excerpt=code[:380].strip(),
+                )
+            )
+            if language == "sql":
+                files_inspected.extend(extract_tables(code))
+
+    return (
+        TaskJournal(
+            conversation_id=conversation_id,
+            objective=objective,
+            repo=repo,
+            status=status,
+            files_inspected=_dedupe_compact_list(files_inspected, 10),
+            files_changed=_dedupe_compact_list(files_changed, 8),
+            generated_code_artifacts=_dedupe_compact_list(generated_code_artifacts, 8),
+            key_decisions=[],
+            open_questions=[],
+            known_errors=_dedupe_compact_list(known_errors, 8),
+            next_steps=[],
+            updated_at="",
+        ),
+        pins,
+    )
+
+
+def _merge_task_journal(base: TaskJournal, derived: TaskJournal) -> TaskJournal:
+    status = base.status
+    if base.status == "planning" and derived.status != "planning":
+        status = derived.status
+    return TaskJournal(
+        conversation_id=base.conversation_id,
+        objective=base.objective or derived.objective,
+        repo=base.repo or derived.repo,
+        status=status,
+        files_inspected=_dedupe_compact_list(
+            [*base.files_inspected, *derived.files_inspected], 8
+        ),
+        files_changed=_dedupe_compact_list([*base.files_changed, *derived.files_changed], 8),
+        generated_code_artifacts=_dedupe_compact_list(
+            [*base.generated_code_artifacts, *derived.generated_code_artifacts], 8
+        ),
+        key_decisions=_dedupe_compact_list(base.key_decisions, 8),
+        open_questions=_dedupe_compact_list(base.open_questions, 8),
+        known_errors=_dedupe_compact_list([*base.known_errors, *derived.known_errors], 8),
+        next_steps=_dedupe_compact_list(base.next_steps, 8),
+        updated_at=base.updated_at,
+    )
+
+
+def _merge_pinned_turns(
+    generated: list[PinnedTurnUpsert], derived: list[PinnedTurnUpsert]
+) -> list[PinnedTurnUpsert]:
+    merged = list(generated)
+    seen = {(pin.turn_index, pin.kind, pin.summary.lower()) for pin in generated}
+    for pin in derived:
+        key = (pin.turn_index, pin.kind, pin.summary.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(pin)
+    return merged
 
 
 def empty_task_journal(conversation_id: str, repo: str | None = None) -> TaskJournal:
@@ -365,9 +577,12 @@ def _render_pinned_turns(state: MemoryState) -> str | None:
     lines = []
     for pin in state.pinned_turns[-8:]:
         detail = pin.summary.strip()
-        if pin.content_excerpt.strip():
-            detail += f" | {pin.content_excerpt.strip()}"
-        lines.append(f"- turn {pin.turn_index} [{pin.kind}]: {detail}")
+        excerpt = pin.content_excerpt.strip()
+        if excerpt:
+            lines.append(f"- turn {pin.turn_index} [{pin.kind}]: {detail}")
+            lines.append(f"  excerpt: {excerpt}")
+        else:
+            lines.append(f"- turn {pin.turn_index} [{pin.kind}]: {detail}")
     return "Pinned high-value turns:\n" + "\n".join(lines)
 
 
@@ -402,6 +617,7 @@ def build_optimized_messages(
     tool_memory_block: str | None = None,
     skill_blocks: list[str] | None = None,
     workflow_blocks: list[str] | None = None,
+    response_style_block: str | None = None,
     task_scratchpad_block: str | None = None,
 ) -> list[dict[str, Any]]:
     current_items = [normalize_item(item) for item in request_input]
@@ -438,6 +654,8 @@ def build_optimized_messages(
     if workflow_blocks:
         for workflow_block in workflow_blocks:
             optimized.append({"role": "system", "content": workflow_block})
+    if response_style_block:
+        optimized.append({"role": "system", "content": response_style_block})
     if task_scratchpad_block:
         optimized.append({"role": "system", "content": task_scratchpad_block})
     if tool_memory_block:
@@ -588,9 +806,13 @@ async def maybe_refresh_memory(
     effective_mode = normalize_memory_mode(mode)
     store = get_memory_store()
     keep_recent = recent_messages_limit(effective_mode)
-    unsummarized_messages = store.load_unsummarized_messages(conversation_id, keep_recent_messages=keep_recent)
+    unsummarized_messages = store.load_unsummarized_messages(
+        conversation_id, keep_recent_messages=keep_recent
+    )
     state = store.load_memory_state(conversation_id, recent_messages_limit=keep_recent)
-    working_set_messages = unsummarized_messages or state.recent_messages[-12:]
+    working_set_messages = unsummarized_messages or state.recent_messages[
+        -working_set_fallback_messages(effective_mode) :
+    ]
     if not working_set_messages:
         return
     working_set_text = render_messages(working_set_messages)
@@ -635,6 +857,12 @@ async def maybe_refresh_memory(
         raw=journal_section if isinstance(journal_section, dict) else {},
         existing=state.task_journal,
     )
+    derived_journal, derived_pins = _derive_structured_memory_signals(
+        working_set_messages,
+        conversation_id=conversation_id,
+        repo=repo,
+    )
+    task_journal = _merge_task_journal(task_journal, derived_journal)
 
     fact_upserts: list[FactUpsert] = []
     for raw in facts_section.get("upserts", []):
@@ -698,6 +926,7 @@ async def maybe_refresh_memory(
                 content_excerpt=excerpt[:380],
             )
         )
+    pinned_turn_upserts = _merge_pinned_turns(pinned_turn_upserts, derived_pins)
 
     payload = MemoryUpdatePayload(
         summary_text=summary_text,

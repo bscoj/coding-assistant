@@ -14,6 +14,8 @@ export type LocalAgentModelConfig = {
 export type LocalAgentStorageConfig = {
   agentRoot: string;
   conversationMemoryDbPath: string;
+  sqlMemoryDbPath: string;
+  analyticsContextDbPath: string;
 };
 
 export function resolveAgentRoot() {
@@ -48,10 +50,21 @@ export function getLocalAgentStorageConfig(): LocalAgentStorageConfig {
   const conversationMemoryDbPath = path.isAbsolute(configuredDbPath)
     ? configuredDbPath
     : path.resolve(agentRoot, configuredDbPath);
+  const configuredSqlDbPath = envValues.SQL_MEMORY_DB_PATH || '.local/sql_memory.db';
+  const sqlMemoryDbPath = path.isAbsolute(configuredSqlDbPath)
+    ? configuredSqlDbPath
+    : path.resolve(agentRoot, configuredSqlDbPath);
+  const configuredAnalyticsDbPath =
+    envValues.ANALYTICS_CONTEXT_DB_PATH || '.local/analytics_context.db';
+  const analyticsContextDbPath = path.isAbsolute(configuredAnalyticsDbPath)
+    ? configuredAnalyticsDbPath
+    : path.resolve(agentRoot, configuredAnalyticsDbPath);
 
   return {
     agentRoot,
     conversationMemoryDbPath,
+    sqlMemoryDbPath,
+    analyticsContextDbPath,
   };
 }
 

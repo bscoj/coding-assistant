@@ -5,6 +5,7 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
+from agent_server.analytics_context_tools import sync_validated_pattern_into_analytics_context
 from agent_server.filesystem_tools import workspace_root
 from agent_server.sql_memory_store import get_sql_store
 
@@ -101,6 +102,7 @@ def save_validated_sql_pattern(
         validation_notes=validation_notes.strip(),
         tags=_split_tags(tags_csv),
     )
+    sync_validated_pattern_into_analytics_context(payload)
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
@@ -128,6 +130,7 @@ def save_validated_sql_file(
         validation_notes=validation_notes.strip(),
         tags=_split_tags(tags_csv),
     )
+    sync_validated_pattern_into_analytics_context(payload)
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 

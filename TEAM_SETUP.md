@@ -43,7 +43,7 @@ nvm use 20
 
 ```bash
 git clone <repo-url>
-cd agent-langgraph
+cd <repo-folder>
 ```
 
 ## 2. Create Local Env File

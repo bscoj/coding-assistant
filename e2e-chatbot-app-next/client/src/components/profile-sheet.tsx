@@ -5,7 +5,11 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { fetchWithErrorHandlers } from '@/lib/utils';
-import { useAppConfig, type MemoryMode } from '@/contexts/AppConfigContext';
+import {
+  useAppConfig,
+  type MemoryMode,
+  type ResponseMode,
+} from '@/contexts/AppConfigContext';
 
 type ProfileScope = 'global' | 'project';
 
@@ -110,7 +114,16 @@ export function ProfileSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { repo, storage, memory, context, setMemoryMode, setContextMode } = useAppConfig();
+  const {
+    repo,
+    storage,
+    memory,
+    context,
+    response,
+    setMemoryMode,
+    setContextMode,
+    setResponseMode,
+  } = useAppConfig();
   const [scope, setScope] = useState<ProfileScope>('global');
   const [profile, setProfile] = useState<ProfileDocument>(EMPTY_PROFILE);
   const [draftEntries, setDraftEntries] = useState<ProfileEntry[]>([]);
@@ -327,6 +340,18 @@ export function ProfileSheet({
                 </div>
               </div>
               <div>
+                SQL memory DB:
+                <div className="mt-1 break-all font-mono text-white/72">
+                  {storage?.sqlMemoryDbPath ?? 'Unavailable'}
+                </div>
+              </div>
+              <div>
+                Analytics context DB:
+                <div className="mt-1 break-all font-mono text-white/72">
+                  {storage?.analyticsContextDbPath ?? 'Unavailable'}
+                </div>
+              </div>
+              <div>
                 Agent repo root:
                 <div className="mt-1 break-all font-mono text-white/72">
                   {storage?.agentRoot ?? 'Unavailable'}
@@ -443,6 +468,51 @@ export function ProfileSheet({
                   {context?.mode === 'fresh'
                     ? 'Fresh: no durable profile injection'
                     : 'Personalized: user and project profiles enabled'}
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 rounded-2xl border border-violet-300/15 bg-violet-300/[0.04] p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm font-medium text-white/90">
+                    Teach mode
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-white/50">
+                    Keep answers practical, but add a compact why, tradeoff, and next validation step so you learn while shipping.
+                  </p>
+                </div>
+                <Badge
+                  variant="secondary"
+                  className="rounded-full bg-violet-300/14 text-violet-100"
+                >
+                  {response?.mode === 'teach' ? 'Teach' : 'Direct'}
+                </Badge>
+              </div>
+              <div className="mt-3 inline-flex rounded-full border border-white/[0.08] bg-black/20 p-1">
+                {[
+                  { value: 'direct', label: 'Direct' },
+                  { value: 'teach', label: 'Teach' },
+                ].map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setResponseMode(option.value as ResponseMode)}
+                    className={`rounded-full px-3 py-1.5 text-xs transition ${
+                      response?.mode === option.value
+                        ? 'bg-white text-black'
+                        : 'text-white/65 hover:text-white'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-3 rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2 text-xs">
+                <div className="uppercase tracking-[0.12em] text-white/35">Response style</div>
+                <div className="mt-1 font-medium text-white/80">
+                  {response?.mode === 'teach'
+                    ? 'Teach: explain the why and next validation step'
+                    : 'Direct: concise execution-first responses'}
                 </div>
               </div>
             </div>
