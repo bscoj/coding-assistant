@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readEnvFile, resolveAgentRoot } from './local-agent-config';
 
-export type MemoryMode = 'balanced' | 'work';
+export type MemoryMode = 'lean' | 'work' | 'raw';
 export type ContextMode = 'personalized' | 'fresh';
 
 export interface LocalMemoryConfig {
@@ -31,7 +31,9 @@ function ensureStoreDir() {
 }
 
 function normalizeMemoryMode(value: unknown): MemoryMode {
-  return value === 'balanced' ? 'balanced' : 'work';
+  if (value === 'raw') return 'raw';
+  if (value === 'lean' || value === 'balanced') return 'lean';
+  return 'work';
 }
 
 function normalizeContextMode(value: unknown): ContextMode {
@@ -77,18 +79,27 @@ export function getLocalMemoryConfig(): LocalMemoryConfig {
     settings.memoryMode ?? process.env.LOCAL_MEMORY_MODE ?? env.MEMORY_MODE,
   );
 
+  if (mode === 'raw') {
+    return {
+      mode,
+      recentMessages: parseInteger(env.MEMORY_RAW_RECENT_MESSAGES, 140),
+      summaryThresholdMessages: parseInteger(env.MEMORY_RAW_SUMMARY_THRESHOLD_MESSAGES, 20),
+      maxSummaryWords: parseInteger(env.MEMORY_RAW_MAX_SUMMARY_WORDS, 1600),
+    };
+  }
+
   if (mode === 'work') {
     return {
       mode,
-      recentMessages: parseInteger(env.MEMORY_WORK_RECENT_MESSAGES, 24),
-      summaryThresholdMessages: parseInteger(env.MEMORY_WORK_SUMMARY_THRESHOLD_MESSAGES, 8),
+      recentMessages: parseInteger(env.MEMORY_WORK_RECENT_MESSAGES, 60),
+      summaryThresholdMessages: parseInteger(env.MEMORY_WORK_SUMMARY_THRESHOLD_MESSAGES, 12),
       maxSummaryWords: parseInteger(env.MEMORY_WORK_MAX_SUMMARY_WORDS, 1000),
     };
   }
 
   return {
     mode,
-    recentMessages: parseInteger(env.MEMORY_RECENT_MESSAGES, 8),
+    recentMessages: parseInteger(env.MEMORY_RECENT_MESSAGES, 12),
     summaryThresholdMessages: parseInteger(env.MEMORY_SUMMARY_THRESHOLD_MESSAGES, 10),
     maxSummaryWords: parseInteger(env.MEMORY_MAX_SUMMARY_WORDS, 450),
   };

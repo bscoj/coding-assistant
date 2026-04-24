@@ -65,3 +65,7 @@ This keeps context higher-signal than putting every feature into one giant globa
 ## Current skills
 
 - `project-update`: maintains daily status files and drafts concise ServiceNow-ready updates using repo and git context
+- `ml-engineer`: helps the agent reason like a strong senior ML engineer and teacher for repo reviews, modeling tradeoffs, leakage checks, and ML design questions
+- `experiment-review`: helps the agent interpret metrics, compare baselines, and recommend the next best experiments
+- `production-readiness`: helps the agent review serving, batch scoring, MLflow lineage, monitoring, rollback, and deployment hardening
+- `sql-memory`: helps the agent reuse validated SQL patterns, tables, and joins before searching the repo from scratch

@@ -1,0 +1,15 @@
+{
+  "name": "experiment-review",
+  "description": "Review model experiments, metrics, baselines, and next-step hypotheses with good ML evaluation discipline.",
+  "triggers": [
+    "experiment review",
+    "review my runs",
+    "compare runs",
+    "model metrics",
+    "why is model performance bad",
+    "ablation study",
+    "baseline comparison",
+    "experiment results",
+    "model evaluation"
+  ]
+}

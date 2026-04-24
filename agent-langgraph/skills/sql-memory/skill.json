@@ -1,0 +1,13 @@
+{
+  "name": "sql-memory",
+  "description": "Reuse validated SQL patterns, tables, and joins before searching the repo from scratch.",
+  "triggers": [
+    "validated sql",
+    "sql memory",
+    "write spark sql",
+    "sql query",
+    "which tables should i join",
+    "what tables should i use",
+    "save this query"
+  ]
+}

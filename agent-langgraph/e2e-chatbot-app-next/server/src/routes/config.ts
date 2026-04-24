@@ -118,10 +118,10 @@ configRouter.put('/context', async (req: Request, res: Response) => {
 configRouter.put('/memory', async (req: Request, res: Response) => {
   const mode = req.body?.mode;
 
-  if (mode !== 'balanced' && mode !== 'work') {
+  if (mode !== 'lean' && mode !== 'work' && mode !== 'raw') {
     res.status(400).json({
       code: 'bad_request:api',
-      cause: 'mode must be balanced or work',
+      cause: 'mode must be lean, work, or raw',
     });
     return;
   }

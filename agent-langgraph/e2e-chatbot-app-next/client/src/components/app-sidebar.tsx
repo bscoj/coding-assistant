@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Link } from 'react-router-dom';
+import { lazy, Suspense } from 'react';
 
-import { SidebarHistory } from '@/components/sidebar-history';
 import { SidebarUserNav } from '@/components/sidebar-user-nav';
 import {
   Sidebar,
@@ -18,8 +18,13 @@ import { DbIcon } from '@/components/ui/db-icon';
 import { NewChatIcon, SidebarCollapseIcon, SidebarExpandIcon } from '@/components/icons';
 import { cn } from '@/lib/utils';
 import type { ClientSession } from '@chat-template/auth';
-import { Button } from './ui/button';
 import { Action } from './elements/actions';
+
+const SidebarHistory = lazy(() =>
+  import('@/components/sidebar-history').then((module) => ({
+    default: module.SidebarHistory,
+  })),
+);
 
 export function AppSidebar({
   user,
@@ -97,7 +102,15 @@ export function AppSidebar({
 
       {/* ── Chat history ────────────────────────────────────────────────── */}
       <SidebarContent>
-        {effectiveOpen && <SidebarHistory user={user} />}
+        {effectiveOpen ? (
+          <Suspense
+            fallback={
+              <div className="px-3 py-4 text-xs text-white/45">Loading chats…</div>
+            }
+          >
+            <SidebarHistory user={user} />
+          </Suspense>
+        ) : null}
       </SidebarContent>
 
       {/* ── User nav ────────────────────────────────────────────────────── */}

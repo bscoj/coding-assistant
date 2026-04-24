@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 
 import { SidebarToggle } from '@/components/sidebar-toggle';
 import { Button } from '@/components/ui/button';
@@ -14,9 +14,16 @@ import {
 import { PlusIcon, CloudOffIcon } from './icons';
 import { cn } from '../lib/utils';
 import { Skeleton } from './ui/skeleton';
-import { RepoPicker } from './repo-picker';
-import { ProfileSheet } from './profile-sheet';
-import { ModelPicker } from './model-picker';
+
+const RepoPicker = lazy(() =>
+  import('./repo-picker').then((module) => ({ default: module.RepoPicker })),
+);
+const ProfileSheet = lazy(() =>
+  import('./profile-sheet').then((module) => ({ default: module.ProfileSheet })),
+);
+const ModelPicker = lazy(() =>
+  import('./model-picker').then((module) => ({ default: module.ModelPicker })),
+);
 
 const DOCS_URL =
   'https://docs.databricks.com/aws/en/generative-ai/agent-framework/chat-app';
@@ -167,17 +174,29 @@ export function ChatHeader({
       </header>
 
       <OboScopeBanner missingScopes={oboMissingScopes} />
-      <RepoPicker open={repoPickerOpen} onOpenChange={setRepoPickerOpen} />
-      <ProfileSheet open={profileOpen} onOpenChange={setProfileOpen} />
-      <ModelPicker
-        open={modelPickerOpen}
-        onOpenChange={setModelPickerOpen}
-        selectedModel={selectedModel ?? ''}
-        onSelectModel={(model) => {
-          onSelectModel?.(model);
-          setModelPickerOpen(false);
-        }}
-      />
+      {repoPickerOpen ? (
+        <Suspense fallback={null}>
+          <RepoPicker open={repoPickerOpen} onOpenChange={setRepoPickerOpen} />
+        </Suspense>
+      ) : null}
+      {profileOpen ? (
+        <Suspense fallback={null}>
+          <ProfileSheet open={profileOpen} onOpenChange={setProfileOpen} />
+        </Suspense>
+      ) : null}
+      {modelPickerOpen ? (
+        <Suspense fallback={null}>
+          <ModelPicker
+            open={modelPickerOpen}
+            onOpenChange={setModelPickerOpen}
+            selectedModel={selectedModel ?? ''}
+            onSelectModel={(model) => {
+              onSelectModel?.(model);
+              setModelPickerOpen(false);
+            }}
+          />
+        </Suspense>
+      ) : null}
     </>
   );
 }

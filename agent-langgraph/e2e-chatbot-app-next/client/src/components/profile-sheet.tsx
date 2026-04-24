@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { fetchWithErrorHandlers } from '@/lib/utils';
-import { useAppConfig } from '@/contexts/AppConfigContext';
+import { useAppConfig, type MemoryMode } from '@/contexts/AppConfigContext';
 
 type ProfileScope = 'global' | 'project';
 
@@ -343,38 +343,53 @@ export function ProfileSheet({
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <div className="text-sm font-medium text-white/90">
-                    Work mode memory
+                    Conversation memory
                   </div>
                   <p className="mt-1 text-xs leading-5 text-white/50">
-                    Keep more recent raw chat in context before summarizing older turns.
-                    Better for long coding sessions; costs more tokens.
+                    Pick how aggressively the app compresses chat history.
+                    Work is the recommended default for serious coding. Raw keeps far more of the thread verbatim.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={memory?.mode === 'work'}
-                  onClick={() =>
-                    setMemoryMode(memory?.mode === 'work' ? 'balanced' : 'work')
-                  }
-                  className={`relative h-7 w-12 shrink-0 rounded-full border transition ${
-                    memory?.mode === 'work'
-                      ? 'border-emerald-300/45 bg-emerald-300/25'
-                      : 'border-white/[0.12] bg-white/[0.05]'
-                  }`}
+                <Badge
+                  variant="secondary"
+                  className="rounded-full bg-emerald-300/14 text-emerald-100"
                 >
-                  <span
-                    className={`absolute top-1 size-5 rounded-full bg-white transition ${
-                      memory?.mode === 'work' ? 'left-6' : 'left-1'
+                  {memory?.mode === 'raw'
+                    ? 'Raw'
+                    : memory?.mode === 'work'
+                      ? 'Work'
+                      : 'Lean'}
+                </Badge>
+              </div>
+              <div className="mt-3 inline-flex rounded-full border border-white/[0.08] bg-black/20 p-1">
+                {[
+                  { value: 'lean', label: 'Lean' },
+                  { value: 'work', label: 'Work' },
+                  { value: 'raw', label: 'Raw' },
+                ].map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setMemoryMode(option.value as MemoryMode)}
+                    className={`rounded-full px-3 py-1.5 text-xs transition ${
+                      memory?.mode === option.value
+                        ? 'bg-white text-black'
+                        : 'text-white/65 hover:text-white'
                     }`}
-                  />
-                </button>
+                  >
+                    {option.label}
+                  </button>
+                ))}
               </div>
               <div className="mt-3 grid gap-2 text-xs text-white/50 sm:grid-cols-3">
                 <div className="rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2">
                   <div className="uppercase tracking-[0.12em] text-white/35">Mode</div>
                   <div className="mt-1 font-medium text-white/80">
-                    {memory?.mode === 'work' ? 'Work' : 'Balanced'}
+                    {memory?.mode === 'raw'
+                      ? 'Raw'
+                      : memory?.mode === 'work'
+                        ? 'Work'
+                        : 'Lean'}
                   </div>
                 </div>
                 <div className="rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2">

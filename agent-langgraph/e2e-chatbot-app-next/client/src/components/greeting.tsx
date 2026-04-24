@@ -16,7 +16,7 @@ export const Greeting = () => {
           What are we working on today?
         </div>
         <div className="mx-auto max-w-xl text-sm text-white/48 md:text-base">
-          Inspect codebase. Make Edits. Ship Fast. 🚀
+          Inspect code. Understand pipelines. Improve models. Ship safely.
         </div>
       </motion.div>
     </div>

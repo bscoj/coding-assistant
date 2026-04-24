@@ -1,6 +1,5 @@
-import React, { memo, useState } from 'react';
+import React, { lazy, memo, Suspense, useState } from 'react';
 import { AnimatedAssistantIcon } from './animation-assistant-icon';
-import { Response } from './elements/response';
 import { MessageContent } from './elements/message';
 import {
   Tool,
@@ -36,12 +35,33 @@ import {
 import { MessageError } from './message-error';
 import { MessageOAuthError } from './message-oauth-error';
 import { isCredentialErrorMessage } from '@/lib/oauth-error-utils';
-import { Streamdown } from 'streamdown';
 import { useApproval } from '@/hooks/use-approval';
-import {
-  LocalFilesReview,
-  type LocalFilesystemApprovalEntry,
-} from './local-files-review';
+import type { LocalFilesystemApprovalEntry } from './local-files-review';
+
+const Response = lazy(() =>
+  import('./elements/response').then((module) => ({ default: module.Response })),
+);
+const LocalFilesReview = lazy(() =>
+  import('./local-files-review').then((module) => ({
+    default: module.LocalFilesReview,
+  })),
+);
+
+function shouldRenderRichMarkdown(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+
+  return (
+    trimmed.includes('```') ||
+    /`[^`\n]+`/.test(trimmed) ||
+    /^\s{0,3}(?:[-*+]|\d+\.)\s+/m.test(trimmed) ||
+    /^\s{0,3}#{1,6}\s+/m.test(trimmed) ||
+    /^\s{0,3}>\s+/m.test(trimmed) ||
+    /\[[^\]]+\]\((https?:\/\/|\/)/.test(trimmed) ||
+    /^\|.+\|\s*$/m.test(trimmed) ||
+    /```mermaid/.test(trimmed.toLowerCase())
+  );
+}
 
 const PurePreviewMessage = ({
   chatId,
@@ -218,13 +238,18 @@ const PurePreviewMessage = ({
             if (type === 'text') {
               if (isNamePart(part)) {
                 return (
-                  <Streamdown
+                  <div
                     key={key}
-                    className="-mb-2 mt-0 border-l-4 pl-2 text-muted-foreground"
-                  >{`# ${formatNamePart(part)}`}</Streamdown>
+                    className="-mb-2 mt-0 border-l-4 border-white/[0.12] pl-3 text-sm text-white/52"
+                  >
+                    {formatNamePart(part)}
+                  </div>
                 );
               }
               if (mode === 'view') {
+                const text = sanitizeText(joinMessagePartSegments(parts));
+                const useRichMarkdown =
+                  message.role === 'assistant' && shouldRenderRichMarkdown(text);
                 return (
                   <div key={key}>
                     <MessageContent
@@ -236,9 +261,21 @@ const PurePreviewMessage = ({
                           message.role === 'assistant',
                       })}
                     >
-                      <Response>
-                        {sanitizeText(joinMessagePartSegments(parts))}
-                      </Response>
+                      {useRichMarkdown ? (
+                        <Suspense
+                          fallback={
+                            <div className="whitespace-pre-wrap text-[15px] leading-7 text-white/84">
+                              {text}
+                            </div>
+                          }
+                        >
+                          <Response>{text}</Response>
+                        </Suspense>
+                      ) : (
+                        <div className="whitespace-pre-wrap text-[15px] leading-7 text-white/84">
+                          {text}
+                        </div>
+                      )}
                     </MessageContent>
                   </div>
                 );
@@ -432,32 +469,34 @@ const PurePreviewMessage = ({
           })}
 
           {message.role === 'assistant' && localFilesystemApprovals.length > 0 ? (
-            <LocalFilesReview
-              approvals={localFilesystemApprovals}
-              isSubmitting={isSubmitting}
-              onApprove={() =>
-                submitApproval({
-                  approvalRequestIds: localFilesystemApprovals.map(
-                    (entry) => entry.approvalRequestId,
-                  ),
-                  toolNames: localFilesystemApprovals.map(
-                    (entry) => entry.toolName,
-                  ),
-                  approve: true,
-                })
-              }
-              onDeny={() =>
-                submitApproval({
-                  approvalRequestIds: localFilesystemApprovals.map(
-                    (entry) => entry.approvalRequestId,
-                  ),
-                  toolNames: localFilesystemApprovals.map(
-                    (entry) => entry.toolName,
-                  ),
-                  approve: false,
-                })
-              }
-            />
+            <Suspense fallback={<div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-white/52">Loading file review…</div>}>
+              <LocalFilesReview
+                approvals={localFilesystemApprovals}
+                isSubmitting={isSubmitting}
+                onApprove={() =>
+                  submitApproval({
+                    approvalRequestIds: localFilesystemApprovals.map(
+                      (entry) => entry.approvalRequestId,
+                    ),
+                    toolNames: localFilesystemApprovals.map(
+                      (entry) => entry.toolName,
+                    ),
+                    approve: true,
+                  })
+                }
+                onDeny={() =>
+                  submitApproval({
+                    approvalRequestIds: localFilesystemApprovals.map(
+                      (entry) => entry.approvalRequestId,
+                    ),
+                    toolNames: localFilesystemApprovals.map(
+                      (entry) => entry.toolName,
+                    ),
+                    approve: false,
+                  })
+                }
+              />
+            </Suspense>
           ) : null}
 
           {!isReadonly && !hasOnlyErrors && (

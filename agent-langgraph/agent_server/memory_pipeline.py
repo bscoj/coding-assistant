@@ -11,6 +11,8 @@ from agent_server.memory_models import (
     FactUpsert,
     MemoryState,
     MemoryUpdatePayload,
+    PinnedTurnUpsert,
+    TaskJournal,
 )
 from agent_server.memory_models import StoredMessage
 from agent_server.memory_store import get_memory_store, normalize_item
@@ -18,12 +20,15 @@ from agent_server.memory_store import get_memory_store, normalize_item
 logger = logging.getLogger(__name__)
 
 DEFAULT_THRESHOLD_MESSAGES = 10
-DEFAULT_RECENT_MESSAGES = 8
-DEFAULT_WORK_THRESHOLD_MESSAGES = 8
-DEFAULT_WORK_RECENT_MESSAGES = 24
+DEFAULT_RECENT_MESSAGES = 12
+DEFAULT_WORK_THRESHOLD_MESSAGES = 12
+DEFAULT_WORK_RECENT_MESSAGES = 60
+DEFAULT_RAW_THRESHOLD_MESSAGES = 20
+DEFAULT_RAW_RECENT_MESSAGES = 140
 DEFAULT_MIN_FACT_CONFIDENCE = 0.65
 DEFAULT_MAX_SUMMARY_WORDS = 450
 DEFAULT_WORK_MAX_SUMMARY_WORDS = 1000
+DEFAULT_RAW_MAX_SUMMARY_WORDS = 1600
 DEFAULT_MEMORY_MODE = "work"
 DEFAULT_TOOL_SUMMARY_MAX_CHARS = 1200
 
@@ -56,32 +61,46 @@ def _env_float(name: str, default: float) -> float:
 
 def normalize_memory_mode(mode: str | None = None) -> str:
     raw = (mode or os.getenv("MEMORY_MODE", DEFAULT_MEMORY_MODE)).strip().lower()
-    if raw in {"balanced", "standard", "default"}:
-        return "balanced"
+    if raw in {"balanced", "standard", "default", "lean"}:
+        return "lean"
     if raw == "work":
         return "work"
+    if raw == "raw":
+        return "raw"
     logger.warning("Invalid MEMORY_MODE=%s. Using %s.", raw, DEFAULT_MEMORY_MODE)
     return DEFAULT_MEMORY_MODE
 
 
 def recent_messages_limit(mode: str | None = None) -> int:
-    if normalize_memory_mode(mode) == "work":
+    normalized = normalize_memory_mode(mode)
+    if normalized == "work":
         return _env_int("MEMORY_WORK_RECENT_MESSAGES", DEFAULT_WORK_RECENT_MESSAGES)
+    if normalized == "raw":
+        return _env_int("MEMORY_RAW_RECENT_MESSAGES", DEFAULT_RAW_RECENT_MESSAGES)
     return _env_int("MEMORY_RECENT_MESSAGES", DEFAULT_RECENT_MESSAGES)
 
 
 def summarize_threshold_messages(mode: str | None = None) -> int:
-    if normalize_memory_mode(mode) == "work":
+    normalized = normalize_memory_mode(mode)
+    if normalized == "work":
         return _env_int(
             "MEMORY_WORK_SUMMARY_THRESHOLD_MESSAGES",
             DEFAULT_WORK_THRESHOLD_MESSAGES,
+        )
+    if normalized == "raw":
+        return _env_int(
+            "MEMORY_RAW_SUMMARY_THRESHOLD_MESSAGES",
+            DEFAULT_RAW_THRESHOLD_MESSAGES,
         )
     return _env_int("MEMORY_SUMMARY_THRESHOLD_MESSAGES", DEFAULT_THRESHOLD_MESSAGES)
 
 
 def max_summary_words(mode: str | None = None) -> int:
-    if normalize_memory_mode(mode) == "work":
+    normalized = normalize_memory_mode(mode)
+    if normalized == "work":
         return _env_int("MEMORY_WORK_MAX_SUMMARY_WORDS", DEFAULT_WORK_MAX_SUMMARY_WORDS)
+    if normalized == "raw":
+        return _env_int("MEMORY_RAW_MAX_SUMMARY_WORDS", DEFAULT_RAW_MAX_SUMMARY_WORDS)
     return _env_int("MEMORY_MAX_SUMMARY_WORDS", DEFAULT_MAX_SUMMARY_WORDS)
 
 
@@ -91,6 +110,75 @@ def min_fact_confidence() -> float:
 
 def tool_summary_max_chars() -> int:
     return _env_int("MEMORY_TOOL_SUMMARY_MAX_CHARS", DEFAULT_TOOL_SUMMARY_MAX_CHARS)
+
+
+def _dedupe_compact_list(values: list[Any], limit: int) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for raw in values:
+        value = " ".join(str(raw).split()).strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(value[:240])
+        if len(output) >= limit:
+            break
+    return output
+
+
+def empty_task_journal(conversation_id: str, repo: str | None = None) -> TaskJournal:
+    return TaskJournal(
+        conversation_id=conversation_id,
+        objective="",
+        repo=repo,
+        status="planning",
+        files_inspected=[],
+        files_changed=[],
+        generated_code_artifacts=[],
+        key_decisions=[],
+        open_questions=[],
+        known_errors=[],
+        next_steps=[],
+        updated_at="",
+    )
+
+
+def normalize_task_journal(
+    conversation_id: str,
+    repo: str | None,
+    raw: dict[str, Any] | None,
+    existing: TaskJournal | None = None,
+) -> TaskJournal:
+    base = existing or empty_task_journal(conversation_id, repo=repo)
+    raw = raw or {}
+    def _journal_list(key: str, fallback: list[str]) -> list[str]:
+        if key in raw and isinstance(raw.get(key), list):
+            return _dedupe_compact_list(raw.get(key) or [], 8 if key not in {"generated_code_artifacts", "open_questions", "known_errors", "next_steps"} else 6)
+        return fallback
+
+    objective = " ".join(str(raw.get("objective") or base.objective or "").split()).strip()[:320]
+    status = str(raw.get("status") or base.status or "planning").strip().lower()
+    if status not in {"planning", "exploring", "implementing", "debugging", "reviewing"}:
+        status = base.status or "planning"
+    return TaskJournal(
+        conversation_id=conversation_id,
+        objective=objective,
+        repo=repo or raw.get("repo") or base.repo,
+        status=status,
+        files_inspected=_journal_list("files_inspected", base.files_inspected),
+        files_changed=_journal_list("files_changed", base.files_changed),
+        generated_code_artifacts=_journal_list(
+            "generated_code_artifacts", base.generated_code_artifacts
+        ),
+        key_decisions=_journal_list("key_decisions", base.key_decisions),
+        open_questions=_journal_list("open_questions", base.open_questions),
+        known_errors=_journal_list("known_errors", base.known_errors),
+        next_steps=_journal_list("next_steps", base.next_steps),
+        updated_at=base.updated_at,
+    )
 
 
 def memory_model():
@@ -241,12 +329,60 @@ def render_messages(messages: list[StoredMessage]) -> str:
     return "\n\n".join(rendered)
 
 
-def build_memory_block(state: MemoryState) -> str | None:
+def _render_task_journal(journal: TaskJournal | None) -> str | None:
+    if journal is None:
+        return None
+
     sections: list[str] = []
+    if journal.objective:
+        sections.append(f"Objective: {journal.objective}")
+    if journal.repo:
+        sections.append(f"Repo: {journal.repo}")
+    if journal.status:
+        sections.append(f"Status: {journal.status}")
+
+    list_sections = [
+        ("Files inspected", journal.files_inspected),
+        ("Files changed", journal.files_changed),
+        ("Generated code artifacts", journal.generated_code_artifacts),
+        ("Key decisions", journal.key_decisions),
+        ("Open questions", journal.open_questions),
+        ("Known errors", journal.known_errors),
+        ("Next steps", journal.next_steps),
+    ]
+    for title, values in list_sections:
+        if values:
+            sections.append(title + ":\n" + "\n".join(f"- {value}" for value in values))
+
+    if not sections:
+        return None
+    return "Active task journal:\n" + "\n\n".join(sections)
+
+
+def _render_pinned_turns(state: MemoryState) -> str | None:
+    if not state.pinned_turns:
+        return None
+    lines = []
+    for pin in state.pinned_turns[-8:]:
+        detail = pin.summary.strip()
+        if pin.content_excerpt.strip():
+            detail += f" | {pin.content_excerpt.strip()}"
+        lines.append(f"- turn {pin.turn_index} [{pin.kind}]: {detail}")
+    return "Pinned high-value turns:\n" + "\n".join(lines)
+
+
+def build_memory_block(state: MemoryState, mode: str | None = None) -> str | None:
+    sections: list[str] = []
+    journal_block = _render_task_journal(state.task_journal)
+    if journal_block:
+        sections.append(journal_block)
+    pinned_block = _render_pinned_turns(state)
+    if pinned_block:
+        sections.append(pinned_block)
     if state.facts:
         fact_lines = [f"- {fact.kind}: {fact.content}" for fact in state.facts]
         sections.append("Active facts:\n" + "\n".join(fact_lines))
-    if state.summary_text.strip():
+    if state.summary_text.strip() and normalize_memory_mode(mode) != "raw":
         sections.append("Rolling summary:\n" + state.summary_text.strip())
     if not sections:
         return None
@@ -259,9 +395,13 @@ def build_memory_block(state: MemoryState) -> str | None:
 def build_optimized_messages(
     request_input: list[Any],
     state: MemoryState | None = None,
+    memory_mode: str | None = None,
     user_profile_block: str | None = None,
+    repo_instruction_blocks: list[str] | None = None,
+    hook_instruction_blocks: list[str] | None = None,
     tool_memory_block: str | None = None,
     skill_blocks: list[str] | None = None,
+    workflow_blocks: list[str] | None = None,
     task_scratchpad_block: str | None = None,
 ) -> list[dict[str, Any]]:
     current_items = [normalize_item(item) for item in request_input]
@@ -286,14 +426,23 @@ def build_optimized_messages(
     optimized: list[dict[str, Any]] = [item for item in system_items]
     if user_profile_block:
         optimized.append({"role": "system", "content": user_profile_block})
+    if repo_instruction_blocks:
+        for block in repo_instruction_blocks:
+            optimized.append({"role": "system", "content": block})
+    if hook_instruction_blocks:
+        for block in hook_instruction_blocks:
+            optimized.append({"role": "system", "content": block})
     if skill_blocks:
         for skill_block in skill_blocks:
             optimized.append({"role": "system", "content": skill_block})
+    if workflow_blocks:
+        for workflow_block in workflow_blocks:
+            optimized.append({"role": "system", "content": workflow_block})
     if task_scratchpad_block:
         optimized.append({"role": "system", "content": task_scratchpad_block})
     if tool_memory_block:
         optimized.append({"role": "system", "content": tool_memory_block})
-    memory_block = build_memory_block(state) if state is not None else None
+    memory_block = build_memory_block(state, memory_mode) if state is not None else None
     if memory_block:
         optimized.append({"role": "system", "content": memory_block})
     optimized.extend(recent_items)
@@ -353,39 +502,59 @@ Requirements:
 Return only the updated summary text."""
 
 
-FACT_SYSTEM_PROMPT = """You extract durable conversation memory for a coding assistant.
+WORKING_SET_SYSTEM_PROMPT = """You maintain the active working set for a coding assistant.
 
-From the new conversation turns, identify durable facts worth storing for future turns.
+Your job is to update:
+- the structured task journal for the current coding thread
+- durable conversation facts worth keeping beyond the current turn
+- pinned high-value turns that should stay easy to recover later
 
-Store only information that is likely to matter later:
-- user preferences
-- constraints
-- decisions
-- tasks
-- important project context
-
-Do not store:
-- small talk
-- transient phrasing
-- information already captured unless it changed
-- speculation unless it is clearly marked uncertain
+Rules:
+- Prefer concrete technical state over narrative summary.
+- Keep lists short, deduplicated, and current.
+- Preserve filenames, function/class names, configs, commands, model names, errors, and implementation decisions.
+- Pin only high-value turns: generated code, key decisions, important constraints, debugging discoveries, or plans worth reusing later.
+- Do not pin routine chatter or ordinary file reads.
+- For durable facts, only store information likely to matter later beyond this exact moment.
+- If a new fact replaces an older one, mark the older one as superseded.
 
 Return valid JSON with this shape:
 {
-  "upserts": [
+  "task_journal": {
+    "objective": "string",
+    "status": "planning | exploring | implementing | debugging | reviewing",
+    "files_inspected": ["string"],
+    "files_changed": ["string"],
+    "generated_code_artifacts": ["string"],
+    "key_decisions": ["string"],
+    "open_questions": ["string"],
+    "known_errors": ["string"],
+    "next_steps": ["string"]
+  },
+  "facts": {
+    "upserts": [
+      {
+        "kind": "preference | constraint | decision | task | project_context",
+        "content": "string",
+        "status": "active | resolved",
+        "confidence": 0.0,
+        "source_turn_start": 0,
+        "source_turn_end": 0
+      }
+    ],
+    "status_changes": [
+      {
+        "match_content": "existing fact content to update",
+        "new_status": "superseded | resolved"
+      }
+    ]
+  },
+  "pins": [
     {
-      "kind": "preference | constraint | decision | task | project_context",
-      "content": "string",
-      "status": "active | resolved",
-      "confidence": 0.0,
-      "source_turn_start": 0,
-      "source_turn_end": 0
-    }
-  ],
-  "status_changes": [
-    {
-      "match_content": "existing fact content to update",
-      "new_status": "superseded | resolved"
+      "turn_index": 0,
+      "kind": "code | decision | error | constraint | plan",
+      "summary": "string",
+      "content_excerpt": "string"
     }
   ]
 }"""
@@ -408,7 +577,11 @@ def _extract_json_block(text: str) -> dict[str, Any]:
     return json.loads(candidate[start : end + 1])
 
 
-async def maybe_refresh_memory(conversation_id: str, mode: str | None = None) -> None:
+async def maybe_refresh_memory(
+    conversation_id: str,
+    mode: str | None = None,
+    repo: str | None = None,
+) -> None:
     if not memory_enabled():
         return
 
@@ -416,27 +589,34 @@ async def maybe_refresh_memory(conversation_id: str, mode: str | None = None) ->
     store = get_memory_store()
     keep_recent = recent_messages_limit(effective_mode)
     unsummarized_messages = store.load_unsummarized_messages(conversation_id, keep_recent_messages=keep_recent)
-    if len(unsummarized_messages) < summarize_threshold_messages(effective_mode):
-        return
-
     state = store.load_memory_state(conversation_id, recent_messages_limit=keep_recent)
-    message_text = render_messages(unsummarized_messages)
-    max_words = max_summary_words(effective_mode)
+    working_set_messages = unsummarized_messages or state.recent_messages[-12:]
+    if not working_set_messages:
+        return
+    working_set_text = render_messages(working_set_messages)
+
+    summary_text = state.summary_text
+    summarized_through_turn = state.summarized_through_turn
 
     try:
-        summary_text = await _invoke_text(
-            SUMMARY_SYSTEM_PROMPT.format(max_summary_words=max_words),
-            (
-                f"Existing summary:\n{state.summary_text or '[none]'}\n\n"
-                f"New turns:\n{message_text}\n"
-            ),
-        )
+        if len(unsummarized_messages) >= summarize_threshold_messages(effective_mode):
+            summary_text = await _invoke_text(
+                SUMMARY_SYSTEM_PROMPT.format(max_summary_words=max_summary_words(effective_mode)),
+                (
+                    f"Existing summary:\n{state.summary_text or '[none]'}\n\n"
+                    f"New turns:\n{render_messages(unsummarized_messages)}\n"
+                ),
+            )
+            summarized_through_turn = unsummarized_messages[-1].turn_index
 
-        facts_payload = await _invoke_text(
-            FACT_SYSTEM_PROMPT,
+        working_set_payload = await _invoke_text(
+            WORKING_SET_SYSTEM_PROMPT,
             (
+                f"Existing task journal:\n"
+                f"{json.dumps(asdict(state.task_journal) if state.task_journal else asdict(empty_task_journal(conversation_id, repo=repo)), ensure_ascii=True)}\n\n"
                 f"Existing active facts:\n{json.dumps([asdict(fact) for fact in state.facts], ensure_ascii=True)}\n\n"
-                f"New turns:\n{message_text}\n"
+                f"Existing pinned turns:\n{json.dumps([asdict(pin) for pin in state.pinned_turns], ensure_ascii=True)}\n\n"
+                f"New turns:\n{working_set_text}\n"
             ),
         )
     except Exception:
@@ -445,9 +625,19 @@ async def maybe_refresh_memory(conversation_id: str, mode: str | None = None) ->
         )
         return
 
-    parsed = _extract_json_block(facts_payload)
+    parsed = _extract_json_block(working_set_payload)
+    facts_section = parsed.get("facts", {}) if isinstance(parsed, dict) else {}
+    journal_section = parsed.get("task_journal", {}) if isinstance(parsed, dict) else {}
+
+    task_journal = normalize_task_journal(
+        conversation_id=conversation_id,
+        repo=repo,
+        raw=journal_section if isinstance(journal_section, dict) else {},
+        existing=state.task_journal,
+    )
+
     fact_upserts: list[FactUpsert] = []
-    for raw in parsed.get("upserts", []):
+    for raw in facts_section.get("upserts", []):
         if not isinstance(raw, dict):
             continue
         confidence = float(raw.get("confidence", 0.0))
@@ -470,7 +660,7 @@ async def maybe_refresh_memory(conversation_id: str, mode: str | None = None) ->
         )
 
     fact_status_changes: list[FactStatusChange] = []
-    for raw in parsed.get("status_changes", []):
+    for raw in facts_section.get("status_changes", []):
         if not isinstance(raw, dict):
             continue
         match_content = str(raw.get("match_content", "")).strip()
@@ -480,10 +670,41 @@ async def maybe_refresh_memory(conversation_id: str, mode: str | None = None) ->
                 FactStatusChange(match_content=match_content, new_status=new_status)
             )
 
+    pinned_turn_upserts: list[PinnedTurnUpsert] = []
+    first_turn = working_set_messages[0].turn_index
+    last_turn = working_set_messages[-1].turn_index
+    allowed_pin_kinds = {"code", "decision", "error", "constraint", "plan"}
+    for raw in parsed.get("pins", []):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            turn_index = int(raw.get("turn_index", 0))
+        except (TypeError, ValueError):
+            continue
+        if turn_index < first_turn or turn_index > last_turn:
+            continue
+        kind = str(raw.get("kind", "")).strip().lower()
+        if kind not in allowed_pin_kinds:
+            continue
+        summary = " ".join(str(raw.get("summary", "")).split()).strip()
+        excerpt = " ".join(str(raw.get("content_excerpt", "")).split()).strip()
+        if not summary:
+            continue
+        pinned_turn_upserts.append(
+            PinnedTurnUpsert(
+                turn_index=turn_index,
+                kind=kind,
+                summary=summary[:280],
+                content_excerpt=excerpt[:380],
+            )
+        )
+
     payload = MemoryUpdatePayload(
         summary_text=summary_text,
-        summarized_through_turn=unsummarized_messages[-1].turn_index,
+        summarized_through_turn=summarized_through_turn,
         fact_upserts=fact_upserts,
         fact_status_changes=fact_status_changes,
+        task_journal=task_journal,
+        pinned_turn_upserts=pinned_turn_upserts,
     )
     store.apply_memory_update(conversation_id, payload)

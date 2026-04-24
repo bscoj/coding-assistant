@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
+from time import perf_counter
 from typing import AsyncGenerator, Awaitable, Optional
 
 import litellm
@@ -30,6 +31,7 @@ from agent_server.filesystem_tools import (
     set_filesystem_tool_context,
     workspace_root,
 )
+from agent_server.chat_history_tools import CHAT_HISTORY_TOOLS
 from agent_server.memory_pipeline import (
     assistant_outputs_to_items,
     build_optimized_messages,
@@ -38,6 +40,14 @@ from agent_server.memory_pipeline import (
     recent_messages_limit,
 )
 from agent_server.memory_store import get_memory_store
+from agent_server.playbooks import build_playbook_blocks
+from agent_server.repo_instructions import build_repo_instruction_blocks
+from agent_server.runtime_hooks import (
+    build_runtime_hook_blocks,
+    emit_runtime_hook_event,
+    wrap_tools_with_runtime_hooks,
+)
+from agent_server.sql_memory_tools import SQL_MEMORY_TOOLS
 from agent_server.skills import build_skill_blocks
 from agent_server.user_profile import build_profile_blocks, maybe_refresh_user_profiles
 from agent_server.utils import (
@@ -58,14 +68,20 @@ AGENT_SYSTEM_PROMPT = """You are Coding Buddy, a repo-aware coding assistant.
 
 Core behavior:
 - Be concise, practical, and accurate.
+- Respect repo-native instructions and active workflow blocks when they are injected.
 - Prefer understanding the repo before proposing changes.
 - Minimize redundant tool use. Reuse recent file reads and targeted searches instead of rereading whole files.
 - Prefer workspace_overview(), find_files_by_name(), recent_file_reads(), targeted search_files(), and search_code_blocks() before broad reads.
+- For ML or data-science repos, prefer ml_repo_overview() early so you can orient on training, evaluation, data pipelines, serving, and likely risks in one pass.
+- For SQL or analytics tasks, prefer validated_sql_store_overview(), search_validated_sql_patterns(), and search_validated_sql_by_table_or_join() before broad repo search so you can reuse trusted tables and joins.
+- When the user confirms a SQL query is correct or trusted, save it with save_validated_sql_pattern() or save_validated_sql_file().
+- If the user refers to code, errors, or decisions from earlier in this same chat, use search_chat_history() or read_chat_turn() before guessing.
 - Use injected skill blocks when they are present for task-specific workflows.
 - Do not assume a skill is active unless it was injected for the current request.
 - When the user asks you to explore, understand, inspect, or figure out a repo, stay in exploration mode until you can give one coherent answer.
 - In exploration mode, do not stop after one or two file reads if important gaps remain. Chain a few high-signal tool calls together, then synthesize.
 - Only stop exploration early if you hit a real blocker or the user explicitly wants a quick first-pass answer.
+- When explaining ML work, teach while you solve: state what the component does, why it matters, common failure modes, and the next best validation step.
 
 File changes:
 - Use staged write tools for all file edits.
@@ -147,8 +163,12 @@ def init_mcp_client(workspace_client: WorkspaceClient) -> DatabricksMultiServerM
     )
 
 
-async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
-    tools = [get_current_time, *FILESYSTEM_TOOLS]
+async def init_agent(
+    workspace_root_override: str | None = None,
+    workspace_client: Optional[WorkspaceClient] = None,
+):
+    tools = [get_current_time, *FILESYSTEM_TOOLS, *CHAT_HISTORY_TOOLS, *SQL_MEMORY_TOOLS]
+    tools = wrap_tools_with_runtime_hooks(tools, workspace_root_override)
     # To use MCP server tools instead, replace the line above with:
     #   mcp_client = init_mcp_client(workspace_client or sp_workspace_client)
     #   try:
@@ -179,10 +199,28 @@ async def stream_handler(
     request_items = [i.model_dump() for i in request.input]
     turn_items = current_turn_items(request_items)
     current_workspace_root = str(workspace_root())
+    request_started = perf_counter()
+    output_items: list[dict] = []
+    run_error: str | None = None
     record_task_request(turn_items)
+    emit_runtime_hook_event(
+        current_workspace_root,
+        "SessionStart",
+        {
+            "conversation_id": get_session_id(request),
+            "memory_mode": requested_memory_mode(),
+            "context_mode": requested_context_mode(),
+        },
+    )
     task_scratchpad_block = build_task_scratchpad_block()
     tool_memory_block = build_tool_memory_block()
     skill_blocks = build_skill_blocks(turn_items)
+    workflow_blocks = build_playbook_blocks(turn_items)
+    repo_instruction_blocks = build_repo_instruction_blocks(current_workspace_root)
+    hook_instruction_blocks = [
+        *build_runtime_hook_blocks(current_workspace_root, "SessionStart"),
+        *build_runtime_hook_blocks(current_workspace_root, "BeforeAgent"),
+    ]
     conversation_id = get_session_id(request)
     memory_mode = requested_memory_mode()
     context_mode = requested_context_mode()
@@ -194,6 +232,14 @@ async def stream_handler(
     approval_request_id, approval_approved = detect_approval_response(turn_items)
     if approval_request_id and approval_approved is True:
         text = apply_staged_write_by_approval_id(approval_request_id)
+        emit_runtime_hook_event(
+            current_workspace_root,
+            "ApprovalApplied",
+            {
+                "conversation_id": conversation_id,
+                "approval_request_id": approval_request_id,
+            },
+        )
         output_item = assistant_text_output_item(text)
         yield ResponsesAgentStreamEvent(**create_text_delta(delta=text, item_id=output_item["id"]))
         yield ResponsesAgentStreamEvent(type="response.output_item.done", item=output_item)
@@ -202,6 +248,24 @@ async def stream_handler(
                 get_memory_store().save_messages(conversation_id, [output_item])
             except Exception:
                 logger.exception("Failed to persist approval-write confirmation.")
+            else:
+                _run_background(
+                    maybe_refresh_memory(
+                        conversation_id,
+                        mode=memory_mode,
+                        repo=current_workspace_root,
+                    )
+                )
+        emit_runtime_hook_event(
+            current_workspace_root,
+            "Stop",
+            {
+                "conversation_id": conversation_id,
+                "duration_ms": round((perf_counter() - request_started) * 1000, 1),
+                "output_item_count": 1,
+                "error": None,
+            },
+        )
         return
 
     if conversation_id:
@@ -214,19 +278,27 @@ async def stream_handler(
         optimized_input = build_optimized_messages(
             turn_items,
             memory_state,
+            memory_mode=memory_mode,
             user_profile_block=user_profile_block,
+            repo_instruction_blocks=repo_instruction_blocks,
+            hook_instruction_blocks=hook_instruction_blocks,
             task_scratchpad_block=task_scratchpad_block,
             tool_memory_block=tool_memory_block,
             skill_blocks=skill_blocks,
+            workflow_blocks=workflow_blocks,
         )
     else:
         optimized_input = build_optimized_messages(
             turn_items,
             state=None,
+            memory_mode=memory_mode,
             user_profile_block=user_profile_block,
+            repo_instruction_blocks=repo_instruction_blocks,
+            hook_instruction_blocks=hook_instruction_blocks,
             task_scratchpad_block=task_scratchpad_block,
             tool_memory_block=tool_memory_block,
             skill_blocks=skill_blocks,
+            workflow_blocks=workflow_blocks,
         )
 
     # By default, uses service principal credentials.
@@ -234,9 +306,20 @@ async def stream_handler(
     #   agent = await init_agent(workspace_client=get_user_workspace_client())
     set_filesystem_tool_context(optimized_input)
     try:
-        agent = await init_agent()
+        emit_runtime_hook_event(
+            current_workspace_root,
+            "BeforeAgent",
+            {
+                "conversation_id": conversation_id,
+                "memory_mode": memory_mode,
+                "context_mode": context_mode,
+                "repo_instruction_blocks": len(repo_instruction_blocks),
+                "workflow_blocks": len(workflow_blocks),
+                "skill_blocks": len(skill_blocks),
+            },
+        )
+        agent = await init_agent(workspace_root_override=current_workspace_root)
         messages = {"messages": to_chat_completions_input(optimized_input)}
-        output_items = []
 
         async for event in process_agent_astream_events(
             agent.astream(input=messages, stream_mode=["updates", "messages"])
@@ -253,7 +336,13 @@ async def stream_handler(
             except Exception:
                 logger.exception("Failed to persist or refresh conversation memory.")
             else:
-                _run_background(maybe_refresh_memory(conversation_id, mode=memory_mode))
+                _run_background(
+                    maybe_refresh_memory(
+                        conversation_id,
+                        mode=memory_mode,
+                        repo=current_workspace_root,
+                    )
+                )
         if output_items and context_mode != "fresh":
             try:
                 interaction_items = turn_items + assistant_outputs_to_items(output_items)
@@ -266,5 +355,27 @@ async def stream_handler(
                         current_workspace_root,
                     )
                 )
+    except Exception as exc:
+        run_error = str(exc)
+        emit_runtime_hook_event(
+            current_workspace_root,
+            "StopFailure",
+            {
+                "conversation_id": conversation_id,
+                "error": run_error,
+                "duration_ms": round((perf_counter() - request_started) * 1000, 1),
+            },
+        )
+        raise
     finally:
+        emit_runtime_hook_event(
+            current_workspace_root,
+            "Stop",
+            {
+                "conversation_id": conversation_id,
+                "duration_ms": round((perf_counter() - request_started) * 1000, 1),
+                "output_item_count": len(output_items),
+                "error": run_error,
+            },
+        )
         clear_filesystem_tool_context()

@@ -78,7 +78,7 @@ def load_registered_skills() -> list[RegisteredSkill]:
 
 
 def select_relevant_skills(
-    request_items: list[dict[str, Any]], max_skills: int = 2
+    request_items: list[dict[str, Any]], max_skills: int = 3
 ) -> list[RegisteredSkill]:
     latest = _latest_user_text(request_items)
     if not latest:
@@ -113,4 +113,3 @@ def select_relevant_skills(
 
 def build_skill_blocks(request_items: list[dict[str, Any]]) -> list[str]:
     return [skill.render_block() for skill in select_relevant_skills(request_items)]
-

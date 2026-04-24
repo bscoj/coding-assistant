@@ -20,7 +20,7 @@ interface StorageConfig {
   localChatHistoryPath: string;
 }
 
-export type MemoryMode = 'balanced' | 'work';
+export type MemoryMode = 'lean' | 'work' | 'raw';
 export type ContextMode = 'personalized' | 'fresh';
 
 interface MemoryConfig {

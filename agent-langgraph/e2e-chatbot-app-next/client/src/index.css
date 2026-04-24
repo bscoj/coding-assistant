@@ -267,57 +267,69 @@
 }
 
 .codex-response pre,
-.codex-response pre code {
+.codex-response pre code,
+.code-block-surface pre,
+.code-block-surface pre code {
   background: #101214 !important;
   color: #f3f5f7 !important;
-}
-
-.dark .codex-response [data-streamdown='code-block-body'] {
-  background: var(--shiki-dark-bg, #101214) !important;
-  color: var(--shiki-dark, #f3f5f7) !important;
-}
-
-.dark .codex-response [data-streamdown='code-block-body'] [style*='--shiki-dark'] {
-  color: var(--shiki-dark) !important;
 }
 
 .codex-response pre code .token.comment,
 .codex-response pre code .token.prolog,
 .codex-response pre code .token.doctype,
-.codex-response pre code .token.cdata {
+.codex-response pre code .token.cdata,
+.code-block-surface pre code .token.comment,
+.code-block-surface pre code .token.prolog,
+.code-block-surface pre code .token.doctype,
+.code-block-surface pre code .token.cdata {
   color: #8b8b8b !important;
 }
 
 .codex-response pre code .token.keyword,
-.codex-response pre code .token.atrule {
+.codex-response pre code .token.atrule,
+.code-block-surface pre code .token.keyword,
+.code-block-surface pre code .token.atrule {
   color: #a0a0a0 !important;
 }
 
 .codex-response pre code .token.function,
-.codex-response pre code .token.class-name {
+.codex-response pre code .token.class-name,
+.code-block-surface pre code .token.function,
+.code-block-surface pre code .token.class-name {
   color: #ffc799 !important;
 }
 
 .codex-response pre code .token.string,
 .codex-response pre code .token.attr-value,
-.codex-response pre code .token.selector {
+.codex-response pre code .token.selector,
+.code-block-surface pre code .token.string,
+.code-block-surface pre code .token.attr-value,
+.code-block-surface pre code .token.selector {
   color: #99ffe4 !important;
 }
 
 .codex-response pre code .token.number,
 .codex-response pre code .token.boolean,
 .codex-response pre code .token.constant,
-.codex-response pre code .token.symbol {
+.codex-response pre code .token.symbol,
+.code-block-surface pre code .token.number,
+.code-block-surface pre code .token.boolean,
+.code-block-surface pre code .token.constant,
+.code-block-surface pre code .token.symbol {
   color: #ffc799 !important;
 }
 
 .codex-response pre code .token.operator,
-.codex-response pre code .token.punctuation {
+.codex-response pre code .token.punctuation,
+.code-block-surface pre code .token.operator,
+.code-block-surface pre code .token.punctuation {
   color: #a0a0a0 !important;
 }
 
 .codex-response pre code .token.variable,
 .codex-response pre code .token.parameter,
+.code-block-surface pre code .token.variable,
+.code-block-surface pre code .token.parameter,
 .codex-response pre code .token.property,
 .codex-response pre code .token.plain {
   color: #ffffff !important;

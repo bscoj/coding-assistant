@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { ThemeProvider } from '@/components/theme-provider';
 import { SessionProvider } from '@/contexts/SessionContext';
@@ -6,8 +7,9 @@ import { DataStreamProvider } from '@/components/data-stream-provider';
 import { Toaster } from 'sonner';
 import RootLayout from '@/layouts/RootLayout';
 import ChatLayout from '@/layouts/ChatLayout';
-import NewChatPage from '@/pages/NewChatPage';
-import ChatPage from '@/pages/ChatPage';
+
+const NewChatPage = lazy(() => import('@/pages/NewChatPage'));
+const ChatPage = lazy(() => import('@/pages/ChatPage'));
 
 function App() {
   return (
@@ -24,8 +26,22 @@ function App() {
             <Routes>
               <Route path="/" element={<RootLayout />}>
                 <Route element={<ChatLayout />}>
-                  <Route index element={<NewChatPage />} />
-                  <Route path="chat/:id" element={<ChatPage />} />
+                  <Route
+                    index
+                    element={
+                      <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-white/55">Loading chat…</div>}>
+                        <NewChatPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="chat/:id"
+                    element={
+                      <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-white/55">Loading chat…</div>}>
+                        <ChatPage />
+                      </Suspense>
+                    }
+                  />
                 </Route>
               </Route>
             </Routes>

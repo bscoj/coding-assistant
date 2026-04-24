@@ -188,12 +188,15 @@ The agent is intentionally approval-based for file writes.
 ### Local memory
 
 - local conversation memory
-- Work mode: keeps more recent raw messages in context before summarizing older turns
-- Balanced mode: keeps fewer raw messages to reduce token usage
+- Lean mode: keeps fewer raw messages to reduce token usage
+- Work mode: keeps a much larger raw window and is the recommended default for coding
+- Raw mode: keeps far more of the thread verbatim for maximum continuity
+- automatic task journal for the active chat
+- automatic pinned turns for key code, decisions, and debugging discoveries
 - shared user profile
 - project profile per repo
 
-Use `Profile -> Work mode memory` in the UI to switch modes. Work mode is better for active coding because generated code, file paths, and implementation decisions stay in raw context longer.
+Use `Profile -> Conversation memory` in the UI to switch modes. Work mode is the default sweet spot for most engineering work, while Raw is there for long sessions where you want minimal compression.
 
 Use `Profile -> Fresh session` for clean ideation. Fresh mode ignores durable user/project profile memory and does not write new profile facts, while still keeping the current chat coherent.
 

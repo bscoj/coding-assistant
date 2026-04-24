@@ -16,7 +16,10 @@ from agent_server.memory_models import (
     MemoryFact,
     MemoryState,
     MemoryUpdatePayload,
+    PinnedTurn,
+    PinnedTurnUpsert,
     StoredMessage,
+    TaskJournal,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +46,22 @@ def infer_role(item: dict[str, Any]) -> str:
     if isinstance(item.get("type"), str):
         return item["type"]
     return "unknown"
+
+
+def _json_list(values: list[str]) -> str:
+    return json.dumps(values, ensure_ascii=True)
+
+
+def _parse_json_list(raw: Any) -> list[str]:
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def message_storage_id(conversation_id: str, item: dict[str, Any]) -> str:
@@ -115,6 +134,41 @@ class MemoryStore:
 
                 CREATE INDEX IF NOT EXISTS idx_memory_facts_conversation_status
                 ON memory_facts(conversation_id, status);
+
+                CREATE TABLE IF NOT EXISTS conversation_task_journal (
+                  conversation_id TEXT PRIMARY KEY,
+                  objective TEXT NOT NULL DEFAULT '',
+                  repo TEXT,
+                  status TEXT NOT NULL DEFAULT 'planning',
+                  files_inspected_json TEXT NOT NULL DEFAULT '[]',
+                  files_changed_json TEXT NOT NULL DEFAULT '[]',
+                  generated_code_artifacts_json TEXT NOT NULL DEFAULT '[]',
+                  key_decisions_json TEXT NOT NULL DEFAULT '[]',
+                  open_questions_json TEXT NOT NULL DEFAULT '[]',
+                  known_errors_json TEXT NOT NULL DEFAULT '[]',
+                  next_steps_json TEXT NOT NULL DEFAULT '[]',
+                  updated_at TEXT NOT NULL,
+                  FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS pinned_turns (
+                  id TEXT PRIMARY KEY,
+                  conversation_id TEXT NOT NULL,
+                  turn_index INTEGER NOT NULL,
+                  message_id TEXT,
+                  kind TEXT NOT NULL,
+                  summary TEXT NOT NULL,
+                  content_excerpt TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_pinned_turns_unique
+                ON pinned_turns(conversation_id, turn_index, kind);
+
+                CREATE INDEX IF NOT EXISTS idx_pinned_turns_conversation_updated
+                ON pinned_turns(conversation_id, updated_at DESC, turn_index DESC);
                 """
             )
 
@@ -133,6 +187,18 @@ class MemoryStore:
                 """
                 INSERT INTO conversation_memory (conversation_id, summary_text, summarized_through_turn, updated_at)
                 VALUES (?, '', 0, ?)
+                ON CONFLICT(conversation_id) DO NOTHING
+                """,
+                (conversation_id, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO conversation_task_journal (
+                  conversation_id, objective, repo, status, files_inspected_json,
+                  files_changed_json, generated_code_artifacts_json, key_decisions_json,
+                  open_questions_json, known_errors_json, next_steps_json, updated_at
+                )
+                VALUES (?, '', NULL, 'planning', '[]', '[]', '[]', '[]', '[]', '[]', '[]', ?)
                 ON CONFLICT(conversation_id) DO NOTHING
                 """,
                 (conversation_id, now),
@@ -211,6 +277,27 @@ class MemoryStore:
                 """,
                 (conversation_id,),
             ).fetchall()
+            journal_row = conn.execute(
+                """
+                SELECT conversation_id, objective, repo, status, files_inspected_json,
+                       files_changed_json, generated_code_artifacts_json, key_decisions_json,
+                       open_questions_json, known_errors_json, next_steps_json, updated_at
+                FROM conversation_task_journal
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+            pinned_rows = conn.execute(
+                """
+                SELECT id, conversation_id, turn_index, message_id, kind, summary,
+                       content_excerpt, created_at, updated_at
+                FROM pinned_turns
+                WHERE conversation_id = ?
+                ORDER BY updated_at DESC, turn_index DESC
+                LIMIT 12
+                """,
+                (conversation_id,),
+            ).fetchall()
             message_rows = conn.execute(
                 """
                 SELECT id, conversation_id, turn_index, role, content_json, created_at
@@ -229,12 +316,16 @@ class MemoryStore:
             updated_at=memory_row["updated_at"],
         )
         facts = [self._row_to_fact(row) for row in fact_rows]
+        journal = self._row_to_task_journal(journal_row) if journal_row is not None else None
+        pinned_turns = [self._row_to_pinned_turn(row) for row in reversed(pinned_rows)]
         recent_messages = [self._row_to_message(row) for row in reversed(message_rows)]
         return MemoryState(
             conversation_id=conversation_id,
             summary_text=memory.summary_text,
             summarized_through_turn=memory.summarized_through_turn,
             facts=facts,
+            task_journal=journal,
+            pinned_turns=pinned_turns,
             recent_messages=recent_messages,
         )
 
@@ -275,6 +366,43 @@ class MemoryStore:
                 """,
                 (payload.summary_text, payload.summarized_through_turn, now, conversation_id),
             )
+            if payload.task_journal is not None:
+                conn.execute(
+                    """
+                    INSERT INTO conversation_task_journal (
+                      conversation_id, objective, repo, status, files_inspected_json,
+                      files_changed_json, generated_code_artifacts_json, key_decisions_json,
+                      open_questions_json, known_errors_json, next_steps_json, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(conversation_id) DO UPDATE SET
+                      objective=excluded.objective,
+                      repo=excluded.repo,
+                      status=excluded.status,
+                      files_inspected_json=excluded.files_inspected_json,
+                      files_changed_json=excluded.files_changed_json,
+                      generated_code_artifacts_json=excluded.generated_code_artifacts_json,
+                      key_decisions_json=excluded.key_decisions_json,
+                      open_questions_json=excluded.open_questions_json,
+                      known_errors_json=excluded.known_errors_json,
+                      next_steps_json=excluded.next_steps_json,
+                      updated_at=excluded.updated_at
+                    """,
+                    (
+                        conversation_id,
+                        payload.task_journal.objective,
+                        payload.task_journal.repo,
+                        payload.task_journal.status,
+                        _json_list(payload.task_journal.files_inspected),
+                        _json_list(payload.task_journal.files_changed),
+                        _json_list(payload.task_journal.generated_code_artifacts),
+                        _json_list(payload.task_journal.key_decisions),
+                        _json_list(payload.task_journal.open_questions),
+                        _json_list(payload.task_journal.known_errors),
+                        _json_list(payload.task_journal.next_steps),
+                        now,
+                    ),
+                )
             for change in payload.fact_status_changes:
                 conn.execute(
                     """
@@ -285,31 +413,134 @@ class MemoryStore:
                     (change.new_status, now, conversation_id, change.match_content),
                 )
             for upsert in payload.fact_upserts:
+                existing_fact = conn.execute(
+                    """
+                    SELECT id
+                    FROM memory_facts
+                    WHERE conversation_id = ? AND kind = ? AND content = ? AND status = ?
+                    """,
+                    (conversation_id, upsert.kind, upsert.content, upsert.status),
+                ).fetchone()
+                if existing_fact is not None:
+                    conn.execute(
+                        """
+                        UPDATE memory_facts
+                        SET confidence = ?, source_turn_start = ?, source_turn_end = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            upsert.confidence,
+                            upsert.source_turn_start,
+                            upsert.source_turn_end,
+                            now,
+                            existing_fact["id"],
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO memory_facts (
+                          id, conversation_id, kind, content, status, confidence, source_turn_start,
+                          source_turn_end, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"fact_{uuid.uuid4().hex}",
+                            conversation_id,
+                            upsert.kind,
+                            upsert.content,
+                            upsert.status,
+                            upsert.confidence,
+                            upsert.source_turn_start,
+                            upsert.source_turn_end,
+                            now,
+                            now,
+                        ),
+                    )
+            for pin in payload.pinned_turn_upserts:
+                message_row = conn.execute(
+                    """
+                    SELECT id
+                    FROM messages
+                    WHERE conversation_id = ? AND turn_index = ?
+                    """,
+                    (conversation_id, pin.turn_index),
+                ).fetchone()
+                if message_row is None:
+                    continue
                 conn.execute(
                     """
-                    INSERT INTO memory_facts (
-                      id, conversation_id, kind, content, status, confidence, source_turn_start,
-                      source_turn_end, created_at, updated_at
+                    INSERT INTO pinned_turns (
+                      id, conversation_id, turn_index, message_id, kind, summary,
+                      content_excerpt, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(conversation_id, turn_index, kind) DO UPDATE SET
+                      message_id=excluded.message_id,
+                      summary=excluded.summary,
+                      content_excerpt=excluded.content_excerpt,
+                      updated_at=excluded.updated_at
                     """,
                     (
-                        f"fact_{uuid.uuid4().hex}",
+                        f"pin_{uuid.uuid4().hex}",
                         conversation_id,
-                        upsert.kind,
-                        upsert.content,
-                        upsert.status,
-                        upsert.confidence,
-                        upsert.source_turn_start,
-                        upsert.source_turn_end,
+                        pin.turn_index,
+                        message_row["id"],
+                        pin.kind,
+                        pin.summary,
+                        pin.content_excerpt,
                         now,
                         now,
                     ),
                 )
             conn.execute(
+                """
+                DELETE FROM pinned_turns
+                WHERE id IN (
+                  SELECT id
+                  FROM pinned_turns
+                  WHERE conversation_id = ?
+                  ORDER BY updated_at DESC, turn_index DESC
+                  LIMIT -1 OFFSET 40
+                )
+                """,
+                (conversation_id,),
+            )
+            conn.execute(
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 (now, conversation_id),
             )
+
+    def get_message_by_turn_index(self, conversation_id: str, turn_index: int) -> StoredMessage | None:
+        self.ensure_conversation(conversation_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, conversation_id, turn_index, role, content_json, created_at
+                FROM messages
+                WHERE conversation_id = ? AND turn_index = ?
+                """,
+                (conversation_id, turn_index),
+            ).fetchone()
+        return self._row_to_message(row) if row is not None else None
+
+    def search_messages(self, conversation_id: str, query: str, limit: int = 8) -> list[StoredMessage]:
+        self.ensure_conversation(conversation_id)
+        needle = f"%{query.strip().lower()}%"
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, conversation_id, turn_index, role, content_json, created_at
+                FROM messages
+                WHERE conversation_id = ?
+                  AND lower(content_json) LIKE ?
+                ORDER BY turn_index DESC
+                LIMIT ?
+                """,
+                (conversation_id, needle, max(1, min(limit, 20))),
+            ).fetchall()
+        return [self._row_to_message(row) for row in rows]
 
     def latest_turn_index(self, conversation_id: str) -> int:
         self.ensure_conversation(conversation_id)
@@ -341,6 +572,37 @@ class MemoryStore:
             confidence=row["confidence"],
             source_turn_start=row["source_turn_start"],
             source_turn_end=row["source_turn_end"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_task_journal(row: sqlite3.Row) -> TaskJournal:
+        return TaskJournal(
+            conversation_id=row["conversation_id"],
+            objective=row["objective"],
+            repo=row["repo"],
+            status=row["status"],
+            files_inspected=_parse_json_list(row["files_inspected_json"]),
+            files_changed=_parse_json_list(row["files_changed_json"]),
+            generated_code_artifacts=_parse_json_list(row["generated_code_artifacts_json"]),
+            key_decisions=_parse_json_list(row["key_decisions_json"]),
+            open_questions=_parse_json_list(row["open_questions_json"]),
+            known_errors=_parse_json_list(row["known_errors_json"]),
+            next_steps=_parse_json_list(row["next_steps_json"]),
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_pinned_turn(row: sqlite3.Row) -> PinnedTurn:
+        return PinnedTurn(
+            id=row["id"],
+            conversation_id=row["conversation_id"],
+            turn_index=row["turn_index"],
+            message_id=row["message_id"],
+            kind=row["kind"],
+            summary=row["summary"],
+            content_excerpt=row["content_excerpt"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

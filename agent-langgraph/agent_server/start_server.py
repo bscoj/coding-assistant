@@ -18,6 +18,7 @@ def _print_memory_banner() -> None:
     config = memory_runtime_config()
     print("Local memory configuration:")
     print(f"  enabled: {config['enabled']}")
+    print(f"  mode: {config['mode']}")
     print(f"  db_path: {config['db_path']}")
     print(f"  summary_threshold_messages: {config['summary_threshold_messages']}")
     print(f"  recent_messages: {config['recent_messages']}")

@@ -681,6 +681,125 @@ def build_workspace_index(force_refresh: bool = False) -> dict:
     return index
 
 
+def _top_matches(paths: list[str], keywords: tuple[str, ...], limit: int = 8) -> list[str]:
+    lowered_keywords = tuple(keyword.lower() for keyword in keywords)
+    ranked: list[tuple[int, str]] = []
+    for path in paths:
+        lowered = path.lower()
+        score = sum(1 for keyword in lowered_keywords if keyword in lowered)
+        if score:
+            ranked.append((score, path))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    output: list[str] = []
+    seen: set[str] = set()
+    for _, path in ranked:
+        if path in seen:
+            continue
+        seen.add(path)
+        output.append(path)
+        if len(output) >= limit:
+            break
+    return output
+
+
+def _keyword_file_hits(root: Path, pattern: str, limit: int = 12) -> list[str]:
+    rg = shutil.which("rg")
+    if not rg:
+        return []
+    result = subprocess.run(
+        [
+            rg,
+            "-l",
+            "-i",
+            "-m",
+            "1",
+            "--glob",
+            "!.git",
+            "--glob",
+            "!node_modules",
+            "--glob",
+            "!dist",
+            "--glob",
+            "!build",
+            "--glob",
+            "!.next",
+            pattern,
+            str(root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode not in {0, 1}:
+        return []
+    output: list[str] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rel = str(Path(line).resolve().relative_to(root))
+        except Exception:
+            continue
+        output.append(rel)
+        if len(output) >= limit:
+            break
+    return output
+
+
+def _stack_signals(root: Path, paths: list[str]) -> dict[str, list[str]]:
+    signals: dict[str, list[str]] = {}
+
+    def add_signal(name: str, hits: list[str]) -> None:
+        if hits:
+            signals[name] = hits[:6]
+
+    add_signal("mlflow", _keyword_file_hits(root, r"\bmlflow\b"))
+    add_signal("databricks", _keyword_file_hits(root, r"\bdatabricks\b|\bdbutils\b"))
+    add_signal("pyspark", _keyword_file_hits(root, r"\bpyspark\b|\bspark\."))
+    add_signal("scikit-learn", _keyword_file_hits(root, r"\bsklearn\b"))
+    add_signal("xgboost", _keyword_file_hits(root, r"\bxgboost\b"))
+    add_signal("lightgbm", _keyword_file_hits(root, r"\blightgbm\b"))
+    add_signal("pytorch", _keyword_file_hits(root, r"\btorch\b|\bpytorch\b|\blightning\b"))
+    add_signal("tensorflow", _keyword_file_hits(root, r"\btensorflow\b|\bkeras\b"))
+    add_signal("feature-store", _keyword_file_hits(root, r"\bfeature store\b|\bfeature_store\b"))
+
+    if any(path.endswith(".ipynb") for path in paths):
+        notebook_hits = [path for path in paths if path.endswith(".ipynb")][:6]
+        add_signal("notebooks", notebook_hits)
+
+    if any(path.endswith(".sql") for path in paths):
+        sql_hits = [path for path in paths if path.endswith(".sql")][:6]
+        add_signal("sql", sql_hits)
+
+    return signals
+
+
+def _ml_risks(
+    stack_signals: dict[str, list[str]],
+    training_files: list[str],
+    evaluation_files: list[str],
+    inference_files: list[str],
+    data_files: list[str],
+    test_files: list[str],
+    notebook_files: list[str],
+) -> list[str]:
+    risks: list[str] = []
+    if training_files and not evaluation_files:
+        risks.append("Training code is visible, but offline evaluation or validation entrypoints are not obvious yet.")
+    if inference_files and not test_files:
+        risks.append("Inference or serving code exists, but test coverage is not obvious from filenames.")
+    if data_files and not training_files:
+        risks.append("Data or feature pipelines are visible, but the model training entrypoint is not obvious yet.")
+    if notebook_files and len(notebook_files) >= max(3, len(training_files)):
+        risks.append("A lot of the workflow appears notebook-heavy, which can hide production logic and make reproducibility harder.")
+    if training_files and "mlflow" not in stack_signals:
+        risks.append("Model training is present, but MLflow usage was not detected in a quick scan.")
+    if training_files and "databricks" in stack_signals and "pyspark" not in stack_signals:
+        risks.append("Databricks signals are present, but Spark usage is not obvious. Double-check whether large data prep happens elsewhere.")
+    return risks[:5]
+
+
 def _approval_texts(request_messages: list[dict] | None) -> list[str]:
     if not request_messages:
         return []
@@ -921,6 +1040,132 @@ def workspace_overview(force_refresh: bool = False) -> str:
         "extensions": index["extensions"],
         "top_level_dirs": index["top_level_dirs"],
         "important_files": index["important_files"][:20],
+    }
+    return json.dumps(summary, indent=2, ensure_ascii=True)
+
+
+@tool
+def ml_repo_overview(force_refresh: bool = False) -> str:
+    """Return a compact ML-oriented map of the workspace: training, evaluation, inference, configs, stack signals, and likely risks."""
+    index = build_workspace_index(force_refresh=force_refresh)
+    root = Path(index["root"])
+    paths = [file_info["path"] for file_info in index["files"] if isinstance(file_info, dict)]
+
+    config_files = _top_matches(
+        paths,
+        (
+            "pyproject.toml",
+            "requirements.txt",
+            "environment.yml",
+            "conda.yml",
+            "databricks.yml",
+            "mlflow",
+            "config",
+            ".yaml",
+            ".yml",
+            ".json",
+        ),
+    )
+    training_files = _top_matches(
+        paths,
+        (
+            "train",
+            "trainer",
+            "fit",
+            "finetune",
+            "fine_tune",
+            "model",
+            "pipeline",
+        ),
+    )
+    evaluation_files = _top_matches(
+        paths,
+        (
+            "eval",
+            "evaluate",
+            "metric",
+            "validation",
+            "benchmark",
+            "test_model",
+        ),
+    )
+    inference_files = _top_matches(
+        paths,
+        (
+            "predict",
+            "score",
+            "infer",
+            "inference",
+            "serve",
+            "serving",
+            "endpoint",
+            "batch",
+        ),
+    )
+    data_files = _top_matches(
+        paths,
+        (
+            "feature",
+            "features",
+            "dataset",
+            "datasets",
+            "preprocess",
+            "prep",
+            "transform",
+            "etl",
+            "data",
+        ),
+    )
+    orchestration_files = _top_matches(
+        paths,
+        (
+            "job",
+            "workflow",
+            "dag",
+            "bundle",
+            "pipeline",
+            "deploy",
+            "serving",
+            "endpoint",
+        ),
+    )
+    test_files = _top_matches(
+        paths,
+        (
+            "test",
+            "tests",
+            "spec",
+            "integration",
+            "smoke",
+            "regression",
+        ),
+    )
+    notebook_files = [path for path in paths if path.endswith(".ipynb")][:8]
+    stack_signals = _stack_signals(root, paths)
+
+    summary = {
+        "root": index["root"],
+        "file_count": index["file_count"],
+        "top_level_dirs": index["top_level_dirs"],
+        "important_files": index["important_files"][:12],
+        "ml_stack_signals": stack_signals,
+        "likely_training_entrypoints": training_files,
+        "likely_evaluation_entrypoints": evaluation_files,
+        "likely_inference_or_serving_entrypoints": inference_files,
+        "likely_data_or_feature_pipelines": data_files,
+        "likely_orchestration_or_deployment_files": orchestration_files,
+        "likely_test_files": test_files,
+        "notebooks": notebook_files,
+        "config_files": config_files,
+        "likely_risks_or_gaps": _ml_risks(
+            stack_signals=stack_signals,
+            training_files=training_files,
+            evaluation_files=evaluation_files,
+            inference_files=inference_files,
+            data_files=data_files,
+            test_files=test_files,
+            notebook_files=notebook_files,
+        ),
     }
     return json.dumps(summary, indent=2, ensure_ascii=True)
 
@@ -1399,6 +1644,7 @@ def apply_staged_write_by_approval_id(operation_id: str) -> str:
 
 FILESYSTEM_TOOLS = [
     workspace_overview,
+    ml_repo_overview,
     find_files_by_name,
     recent_file_reads,
     git_repo_summary,

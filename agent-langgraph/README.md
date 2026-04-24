@@ -16,11 +16,17 @@ If you want the fastest path from clone to working app, start with [TEAM_SETUP.m
 Coding Buddy is built to help with day-to-day repo work:
 
 - inspect a selected local repo
+- map ML repos quickly with a focused training / eval / serving overview
 - search and read files in that repo
 - propose file edits with explicit approval
 - keep local conversation memory
 - keep shared user and project preferences
+- load repo-native `AGENTS.md` / `CLAUDE.md` guidance from the selected workspace
+- apply focused workflow playbooks for exploration, implementation, debugging, and review
+- emit local runtime hook events for session/tool tracing
 - help with daily project updates through the `project-update` skill
+- coach through ML design, experiment review, and production readiness with on-demand skills
+- keep a repo-aware validated SQL memory store for known-good queries, tables, and joins
 
 ## Local Architecture
 
@@ -106,8 +112,23 @@ That guide covers:
 
 - choose the active repo from the UI
 - keep filesystem access scoped to that repo
+- automatically load repo-native instruction files when present:
+  `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `.coding-buddy/INSTRUCTIONS.md`
 - inspect files, search code, and read targeted snippets
 - stage edits before writing anything
+- for ML repos, use `ml_repo_overview()` to get a one-shot map of training, evaluation, data pipelines, inference, configs, and likely gaps
+
+### Runtime hooks and workflow playbooks
+
+- the agent now applies compact workflow playbooks based on the task:
+  exploration, implementation, debugging, planning, and review
+- repo-local runtime hooks can inject extra instructions with
+  `.coding-buddy/hooks.json`
+- the backend writes local hook events to `.local/runtime_hook_events.jsonl`
+  so we can debug slow requests and noisy tool usage without sending that data
+  anywhere else
+
+See [HOOKS.md](HOOKS.md) for the hook file format.
 
 ### Approval-based file changes
 
@@ -119,33 +140,67 @@ That guide covers:
 ### Local memory
 
 - conversation memory is stored locally in SQLite
-- Work mode keeps a larger recent raw-message window before summarizing older turns
-- Balanced mode keeps a smaller raw window to reduce token usage
+- Lean mode keeps a smaller raw window to reduce token usage
+- Work mode keeps a much larger raw window and is the recommended default for coding
+- Raw mode keeps far more of the thread verbatim for maximum continuity
+- the agent maintains a structured task journal for the active chat
+- the agent automatically pins high-value turns like key code, decisions, and debugging discoveries
 - user profile is stored locally as JSON
 - project profile is stored locally as JSON
 - local chat history can be stored without a database
 
-You can switch memory behavior from `Profile -> Work mode memory`.
-Use Work mode for real coding sessions where the agent needs to remember generated code, file paths, decisions, and implementation details across a longer thread.
+You can switch memory behavior from `Profile -> Conversation memory`.
+Use Work mode for most repo work. Use Raw when you want the closest thing to a long, mostly uncompressed GPT session.
 
 Use `Profile -> Fresh session` when you want a clean chat that ignores durable user/project profile memory. Fresh mode still lets the current chat remember itself, but it does not inject or update cross-chat profile facts.
 
 ### Project update skill
 
-The repo includes one runtime skill today:
+The repo includes runtime skills today:
 
 - `project-update`
+- `ml-engineer`
+- `experiment-review`
+- `production-readiness`
+- `sql-memory`
 
-It helps:
+They help with:
 
 - create a daily update file
 - refresh status from repo and git activity
 - draft a concise ServiceNow-style update
+- reason about ML pipelines like a pragmatic senior ML engineer
+- review metrics, baselines, and next experiments
+- harden ML systems for serving, monitoring, and rollback
 
 See:
 
 - [SKILLS.md](SKILLS.md)
 - [skills/project-update/SKILL.md](skills/project-update/SKILL.md)
+- [skills/ml-engineer/SKILL.md](skills/ml-engineer/SKILL.md)
+- [skills/experiment-review/SKILL.md](skills/experiment-review/SKILL.md)
+- [skills/production-readiness/SKILL.md](skills/production-readiness/SKILL.md)
+- [skills/sql-memory/SKILL.md](skills/sql-memory/SKILL.md)
+
+### Validated SQL memory
+
+- trusted SQL patterns are stored locally per selected repo
+- saved patterns automatically extract tables and join clauses
+- the agent can search those patterns before doing broad repo search
+- this is designed to help with repeated bronze/silver/gold table selection and
+  join recovery
+
+Current SQL memory tools:
+
+- `validated_sql_store_overview()`
+- `search_validated_sql_patterns()`
+- `search_validated_sql_by_table_or_join()`
+- `get_validated_sql_pattern()`
+- `save_validated_sql_pattern()`
+- `save_validated_sql_file()`
+
+If you tell the agent a query is correct or trusted, it can save that query into
+the validated store for reuse later.
 
 ## Configuration
 
@@ -160,12 +215,14 @@ Most important settings:
 - `DATABRICKS_HOST` if needed
 - `AGENT_MODEL_ENDPOINT`
 - `AGENT_AVAILABLE_MODEL_ENDPOINTS`
-- `MEMORY_MODE` (`work` or `balanced`)
+- `MEMORY_MODE` (`lean`, `work`, or `raw`)
 - `CONTEXT_MODE` (`personalized` or `fresh`)
 - `MEMORY_WORK_RECENT_MESSAGES`
+- `MEMORY_RAW_RECENT_MESSAGES`
 - `MEMORY_RECENT_MESSAGES`
 - `MEMORY_MODEL_ENDPOINT` optional
 - `USER_PROFILE_MODEL_ENDPOINT` optional
+- `SQL_MEMORY_DB_PATH`
 - `CHAT_APP_SERVER_PORT`
 - `CHAT_APP_CLIENT_PORT`
 

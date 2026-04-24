@@ -54,6 +54,87 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: "dist",
       sourcemap: false,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes("node_modules")) return;
+            const [, modulePath] = id.split("node_modules/");
+            if (!modulePath) return;
+
+            if (
+              modulePath.startsWith("react/") ||
+              modulePath === "react" ||
+              modulePath.startsWith("react-dom/") ||
+              modulePath === "react-dom" ||
+              modulePath.startsWith("react-router") ||
+              modulePath.startsWith("scheduler")
+            ) {
+              return "react-core";
+            }
+
+            if (
+              modulePath.startsWith("@ai-sdk/") ||
+              modulePath === "ai" ||
+              modulePath.startsWith("ai/") ||
+              modulePath.startsWith("swr")
+            ) {
+              return "vendor-ai";
+            }
+
+            if (modulePath.startsWith("@radix-ui/")) {
+              return "vendor-radix";
+            }
+
+            if (modulePath.startsWith("framer-motion")) {
+              return "vendor-motion";
+            }
+
+            if (modulePath.startsWith("lucide-react")) {
+              return "vendor-icons";
+            }
+
+            if (
+              modulePath.startsWith("next-themes") ||
+              modulePath.startsWith("usehooks-ts") ||
+              modulePath.startsWith("use-stick-to-bottom") ||
+              modulePath.startsWith("sonner") ||
+              modulePath.startsWith("date-fns") ||
+              modulePath.startsWith("fast-deep-equal")
+            ) {
+              return "vendor-utils";
+            }
+
+            if (
+              modulePath.startsWith("streamdown") ||
+              modulePath.startsWith("mermaid") ||
+              modulePath.startsWith("katex") ||
+              modulePath.startsWith("shiki") ||
+              modulePath.startsWith("rehype-") ||
+              modulePath.startsWith("remark-") ||
+              modulePath.startsWith("unified") ||
+              modulePath.startsWith("micromark") ||
+              modulePath.startsWith("mdast-util-") ||
+              modulePath.startsWith("hast-") ||
+              modulePath.startsWith("unist-") ||
+              modulePath.startsWith("vfile") ||
+              modulePath.startsWith("decode-named-character-reference") ||
+              modulePath.startsWith("property-information") ||
+              modulePath.startsWith("space-separated-tokens") ||
+              modulePath.startsWith("comma-separated-tokens") ||
+              modulePath.startsWith("html-url-attributes") ||
+              modulePath.startsWith("hast-util-") ||
+              modulePath.startsWith("mdurl") ||
+              modulePath.startsWith("bail") ||
+              modulePath.startsWith("trough") ||
+              modulePath.startsWith("zwitch") ||
+              modulePath.startsWith("ccount") ||
+              modulePath.startsWith("remend")
+            ) {
+              return "vendor-markdown";
+            }
+          },
+        },
+      },
     },
   };
 });

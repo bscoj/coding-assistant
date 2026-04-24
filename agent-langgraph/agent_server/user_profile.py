@@ -15,8 +15,8 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROFILE_MIN_CONFIDENCE = 0.7
-DEFAULT_PROFILE_MAX_ITEMS = 40
+DEFAULT_PROFILE_MIN_CONFIDENCE = 0.82
+DEFAULT_PROFILE_MAX_ITEMS = 24
 PROFILE_KINDS = {
     "coding_preference",
     "workstyle_preference",
@@ -490,6 +490,7 @@ Good examples:
 - how the user likes explanations or approvals handled
 - durable environment or workflow facts
 - durable security constraints
+- very stable role/background facts that are likely still true weeks later
 
 Do not store:
 - small talk
@@ -497,6 +498,9 @@ Do not store:
 - speculative or weakly implied facts
 - anything that is already captured unless it changed
 - transient details that should stay only in conversation memory
+- temporary implementation choices from one debugging session
+- repo findings or code changes that belong in task memory instead
+- information that would surprise the user if it appeared in a completely new chat
 
 {scope_specific_guidance}
 
@@ -526,13 +530,15 @@ def _profile_prompt(scope: str, workspace_root: str | None = None) -> str:
         guidance = (
             "Keep only durable repo-scoped conventions, constraints, and facts. "
             f"This profile is for the workspace rooted at {workspace_root or '[unknown workspace]'}. "
-            "Do not copy generic user preferences here unless they are specific to this project."
+            "Do not copy generic user preferences here unless they are specific to this project. "
+            "Do not store current tickets, active bugs, or recent implementation progress."
         )
         profile_kind = "persistent project profile"
     else:
         guidance = (
             "Keep only durable user-level preferences and facts that should apply across projects "
-            "and conversations. Do not store repo-specific conventions here."
+            "and conversations. Do not store repo-specific conventions here. "
+            "When unsure, leave it out."
         )
         profile_kind = "persistent user profile"
     return PROFILE_SYSTEM_PROMPT_TEMPLATE.format(

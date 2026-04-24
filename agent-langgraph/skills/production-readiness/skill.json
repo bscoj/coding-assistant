@@ -1,0 +1,16 @@
+{
+  "name": "production-readiness",
+  "description": "Review ML systems for train-serve skew, deployment safety, monitoring, rollback, and production hardening.",
+  "triggers": [
+    "productionize model",
+    "prod readiness",
+    "production readiness",
+    "model serving",
+    "batch scoring",
+    "deployment plan",
+    "model monitoring",
+    "train serve skew",
+    "mlflow serving",
+    "databricks model serving"
+  ]
+}

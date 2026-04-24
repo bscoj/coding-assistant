@@ -1,0 +1,18 @@
+{
+  "name": "ml-engineer",
+  "description": "Coach through ML system design, model development, feature engineering, evaluation, and failure analysis like a pragmatic senior ML engineer.",
+  "triggers": [
+    "machine learning",
+    "ml engineer",
+    "ml pipeline",
+    "model training",
+    "feature engineering",
+    "data leakage",
+    "overfitting",
+    "underfitting",
+    "model performance",
+    "classification model",
+    "regression model",
+    "forecasting model"
+  ]
+}
