@@ -9,7 +9,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 # Need to import the agent to register the functions with the server
 import agent_server.agent  # noqa: E402
 from agent_server.agent import agent_model_endpoint, available_agent_model_endpoints  # noqa: E402
-from agent_server.filesystem_tools import workspace_root, writes_enabled  # noqa: E402
+from agent_server.filesystem_tools import configured_workspace_root, writes_enabled  # noqa: E402
 from agent_server.memory_pipeline import memory_runtime_config  # noqa: E402
 from agent_server.user_profile import profile_runtime_config  # noqa: E402
 
@@ -46,7 +46,7 @@ def _print_user_profile_banner() -> None:
 
 def _print_filesystem_banner() -> None:
     print("Filesystem tools:")
-    print(f"  workspace_root: {workspace_root()}")
+    print(f"  workspace_root: {configured_workspace_root() or '(none selected)'}")
     print(f"  writes_enabled: {writes_enabled()}")
     print("  write_approval_flow: UI allow/deny controls")
 

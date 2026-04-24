@@ -17,6 +17,27 @@ JOIN_PATTERN = re.compile(
     r"(?is)\b((?:left|right|full(?:\s+outer)?|inner|cross)?\s*join)\s+([`\"\[\]\w\.-]+)"
     r"(?:\s+(?:as\s+)?[\w$]+)?\s+on\s+(.*?)(?=\b(?:left|right|full(?:\s+outer)?|inner|cross)?\s*join\b|\bwhere\b|\bgroup\b|\border\b|\bhaving\b|\bqualify\b|\blimit\b|$)"
 )
+FILTER_EQ_PATTERN = re.compile(
+    r"""(?is)\b([A-Za-z_][\w.$]*)\s*(=|!=|<>)\s*(['"])(.{1,160}?)\3"""
+)
+FILTER_IN_PATTERN = re.compile(
+    r"""(?is)\b([A-Za-z_][\w.$]*)\s+in\s*\(([^)]{1,400})\)"""
+)
+QUOTED_LITERAL_PATTERN = re.compile(r"""(['"])(.{1,160}?)\1""")
+GENERIC_FILTER_WORDS = {
+    "hospital",
+    "medical",
+    "center",
+    "centre",
+    "clinic",
+    "system",
+    "health",
+    "healthcare",
+    "facility",
+    "campus",
+    "site",
+    "department",
+}
 
 
 def utc_now() -> str:
@@ -135,6 +156,92 @@ def extract_join_pairs(sql: str) -> list[dict[str, str]]:
         )
         left_table = right_table
     return pairs[:20]
+
+
+def _alias_suggestions(value: str) -> list[str]:
+    compact = " ".join(value.replace("_", " ").split()).strip()
+    if not compact:
+        return []
+    suggestions: list[str] = [compact.lower()]
+    tokens = [token for token in re.split(r"[\s/-]+", compact) if token]
+    if tokens:
+        first = tokens[0]
+        if 2 <= len(first) <= 6 and first.isupper():
+            suggestions.append(first.lower())
+        meaningful = [token for token in tokens if token.lower() not in GENERIC_FILTER_WORDS]
+        if meaningful:
+            suggestions.append(" ".join(token.lower() for token in meaningful))
+            if len(meaningful) == 1:
+                suggestions.append(meaningful[0].lower())
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for suggestion in suggestions:
+        normalized = suggestion.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped[:6]
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def extract_filter_candidates(sql: str) -> list[dict[str, Any]]:
+    normalized = normalize_sql(sql)
+    seen: set[tuple[str, str, str]] = set()
+    candidates: list[dict[str, Any]] = []
+
+    for match in FILTER_EQ_PATTERN.finditer(normalized):
+        column = _clean_identifier(match.group(1))
+        operator = match.group(2)
+        literal = " ".join(match.group(4).split()).strip()
+        if not column or not literal:
+            continue
+        if literal.isdigit():
+            continue
+        key = (column.lower(), operator, literal.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(
+            {
+                "column_name": column,
+                "operator": operator,
+                "canonical_value": literal,
+                "suggested_filter_sql": f"{column} {operator} {_sql_literal(literal)}",
+                "alias_suggestions": _alias_suggestions(literal),
+            }
+        )
+
+    for match in FILTER_IN_PATTERN.finditer(normalized):
+        column = _clean_identifier(match.group(1))
+        raw_values = match.group(2)
+        if not column:
+            continue
+        literals = [
+            " ".join(found.group(2).split()).strip()
+            for found in QUOTED_LITERAL_PATTERN.finditer(raw_values)
+            if " ".join(found.group(2).split()).strip()
+        ]
+        for literal in literals[:5]:
+            if literal.isdigit():
+                continue
+            key = (column.lower(), "in", literal.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                {
+                    "column_name": column,
+                    "operator": "in",
+                    "canonical_value": literal,
+                    "suggested_filter_sql": f"{column} in ({_sql_literal(literal)})",
+                    "alias_suggestions": _alias_suggestions(literal),
+                }
+            )
+    return candidates[:24]
 
 
 def _matches_table_or_join(pattern: dict[str, Any], needle: str) -> bool:
@@ -395,6 +502,95 @@ class ValidatedSqlStore:
             for pattern in patterns
             if _matches_table_or_join(pattern, trimmed)
         ][: max(1, min(limit, 20))]
+
+    def suggest_filter_candidates(
+        self, workspace_root: str, query: str = "", limit: int = 8
+    ) -> list[dict[str, Any]]:
+        workspace_root = str(Path(workspace_root).resolve())
+        trimmed = query.strip().lower()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM validated_sql_patterns
+                WHERE workspace_root = ?
+                ORDER BY use_count DESC, updated_at DESC
+                LIMIT 200
+                """,
+                (workspace_root,),
+            ).fetchall()
+        patterns = [self._row_to_pattern(row) for row in rows]
+        aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+        for pattern in patterns:
+            pattern_text = " ".join(
+                [
+                    pattern["name"],
+                    pattern["summary"],
+                    pattern["validation_notes"],
+                    " ".join(pattern["tables"]),
+                    " ".join(pattern["joins"]),
+                    pattern["sql_text"],
+                ]
+            ).lower()
+            for candidate in extract_filter_candidates(pattern["sql_text"]):
+                if trimmed:
+                    search_text = " ".join(
+                        [
+                            candidate["column_name"],
+                            candidate["canonical_value"],
+                            " ".join(candidate["alias_suggestions"]),
+                            pattern_text,
+                        ]
+                    ).lower()
+                    if trimmed not in search_text:
+                        continue
+
+                key = (
+                    candidate["column_name"].lower(),
+                    candidate["operator"].lower(),
+                    candidate["canonical_value"].lower(),
+                )
+                entry = aggregated.get(key)
+                if entry is None:
+                    entry = {
+                        "column_name": candidate["column_name"],
+                        "operator": candidate["operator"],
+                        "canonical_value": candidate["canonical_value"],
+                        "suggested_filter_sql": candidate["suggested_filter_sql"],
+                        "suggested_aliases": list(candidate["alias_suggestions"]),
+                        "pattern_count": 0,
+                        "patterns": [],
+                        "tables": [],
+                    }
+                    aggregated[key] = entry
+
+                entry["pattern_count"] += 1
+                for alias in candidate["alias_suggestions"]:
+                    if alias not in entry["suggested_aliases"]:
+                        entry["suggested_aliases"].append(alias)
+                for table in pattern["tables"][:4]:
+                    if table not in entry["tables"]:
+                        entry["tables"].append(table)
+                if len(entry["patterns"]) < 4:
+                    entry["patterns"].append(
+                        {
+                            "id": pattern["id"],
+                            "name": pattern["name"],
+                            "summary": pattern["summary"],
+                            "source_path": pattern["source_path"],
+                        }
+                    )
+
+        results = sorted(
+            aggregated.values(),
+            key=lambda item: (
+                -item["pattern_count"],
+                item["column_name"].lower(),
+                item["canonical_value"].lower(),
+            ),
+        )
+        return results[: max(1, min(limit, 20))]
 
     def summarize_pattern(self, pattern: dict[str, Any]) -> dict[str, Any]:
         return self._pattern_summary(pattern)

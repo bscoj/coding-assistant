@@ -11,6 +11,7 @@ from agent_server.analytics_context_store import (
     infer_table_layer,
 )
 from agent_server.filesystem_tools import workspace_root
+from agent_server.filesystem_tools import workspace_selected, workspace_selection_error
 from agent_server.sql_memory_store import (
     extract_join_clauses,
     extract_join_pairs,
@@ -28,6 +29,12 @@ def _split_csv(values: str) -> list[str]:
 
 def _current_workspace_root() -> str:
     return str(workspace_root())
+
+
+def _workspace_root_or_error() -> str | None:
+    if not workspace_selected():
+        return workspace_selection_error()
+    return None
 
 
 def sync_validated_pattern_into_analytics_context(pattern: dict[str, object]) -> None:
@@ -77,7 +84,9 @@ def _known_joins() -> list[dict]:
 
 @tool
 def analytics_context_overview(limit: int = 10) -> str:
-    """Show curated analytics context for the current repo: trusted tables, join rules, and metric definitions."""
+    """Show curated analytics context for the current repo: trusted tables, join rules, metric definitions, and saved filter values."""
+    if error := _workspace_root_or_error():
+        return error
     payload = get_analytics_context_store().overview(
         _current_workspace_root(),
         limit=max(1, min(limit, 20)),
@@ -88,6 +97,8 @@ def analytics_context_overview(limit: int = 10) -> str:
 @tool
 def search_analytics_tables(query: str, limit: int = 8) -> str:
     """Search curated analytics table context by table name, business term, grain, synonym, or important column."""
+    if error := _workspace_root_or_error():
+        return error
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
@@ -105,6 +116,8 @@ def search_analytics_tables(query: str, limit: int = 8) -> str:
 @tool
 def search_analytics_joins(query: str, limit: int = 8) -> str:
     """Search curated analytics join knowledge by table name, key, relationship, or grain note."""
+    if error := _workspace_root_or_error():
+        return error
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
@@ -122,6 +135,8 @@ def search_analytics_joins(query: str, limit: int = 8) -> str:
 @tool
 def search_analytics_metrics(query: str, limit: int = 8) -> str:
     """Search curated analytics metric definitions by metric name, synonym, definition, or source table."""
+    if error := _workspace_root_or_error():
+        return error
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
@@ -131,6 +146,45 @@ def search_analytics_metrics(query: str, limit: int = 8) -> str:
             _current_workspace_root(),
             needle,
             limit=max(1, min(limit, 20)),
+        ),
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=True)
+
+
+@tool
+def search_analytics_filter_values(query: str, limit: int = 8) -> str:
+    """Search curated analytics filter values by business concept, abbreviation, canonical value, table, or column."""
+    if error := _workspace_root_or_error():
+        return error
+    needle = query.strip()
+    if not needle:
+        return "Provide a non-empty query."
+    payload = {
+        "query": needle,
+        "results": get_analytics_context_store().search_filter_values(
+            _current_workspace_root(),
+            needle,
+            limit=max(1, min(limit, 20)),
+        ),
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=True)
+
+
+@tool
+def suggest_filter_candidates_from_validated_sql(query: str = "", limit: int = 8) -> str:
+    """Mine likely exact-value filter candidates from validated SQL so you can promote repeated literals into curated business mappings."""
+    if error := _workspace_root_or_error():
+        return error
+    payload = {
+        "query": query.strip(),
+        "results": get_sql_store().suggest_filter_candidates(
+            _current_workspace_root(),
+            query.strip(),
+            limit=max(1, min(limit, 20)),
+        ),
+        "guidance": (
+            "These are mined from trusted SQL patterns. Promote the high-value ones "
+            "with register_analytics_filter_value() when you want durable alias-to-filter behavior."
         ),
     }
     return json.dumps(payload, indent=2, ensure_ascii=True)
@@ -148,6 +202,8 @@ def register_analytics_table(
     tags_csv: str = "",
 ) -> str:
     """Register curated knowledge about an analytics table for the current repo. Use this only when the user explicitly wants to save trusted table context."""
+    if error := _workspace_root_or_error():
+        return error
     payload = get_analytics_context_store().upsert_table_context(
         workspace_root=_current_workspace_root(),
         table_name=table_name,
@@ -175,6 +231,8 @@ def register_analytics_join(
     tags_csv: str = "",
 ) -> str:
     """Register a trusted analytics join rule for the current repo. Use this only when the user explicitly wants to save known-good join guidance."""
+    if error := _workspace_root_or_error():
+        return error
     payload = get_analytics_context_store().upsert_join_context(
         workspace_root=_current_workspace_root(),
         left_table=left_table,
@@ -201,6 +259,8 @@ def register_analytics_metric(
     tags_csv: str = "",
 ) -> str:
     """Register a trusted analytics metric definition for the current repo. Use this only when the user explicitly wants to save known-good metric context."""
+    if error := _workspace_root_or_error():
+        return error
     payload = get_analytics_context_store().upsert_metric_context(
         workspace_root=_current_workspace_root(),
         metric_name=metric_name,
@@ -216,8 +276,41 @@ def register_analytics_metric(
 
 
 @tool
+def register_analytics_filter_value(
+    concept_name: str,
+    canonical_value: str,
+    column_name: str,
+    source_table: str = "",
+    operator: str = "=",
+    sql_value_expression: str = "",
+    description: str = "",
+    synonyms_csv: str = "",
+    tags_csv: str = "",
+) -> str:
+    """Register a trusted filter mapping for the current repo so plain-language concepts or abbreviations resolve to exact SQL values."""
+    if error := _workspace_root_or_error():
+        return error
+    payload = get_analytics_context_store().upsert_filter_value_context(
+        workspace_root=_current_workspace_root(),
+        concept_name=concept_name,
+        canonical_value=canonical_value,
+        source_table=source_table,
+        column_name=column_name,
+        operator=operator,
+        sql_value_expression=sql_value_expression,
+        description=description,
+        synonyms=_split_csv(synonyms_csv),
+        tags=_split_csv(tags_csv),
+        source="manual",
+    )
+    return json.dumps(payload, indent=2, ensure_ascii=True)
+
+
+@tool
 def suggest_sql_starting_points(task: str, limit: int = 6) -> str:
     """Suggest trusted starting points for a SQL task by combining curated analytics context and validated SQL patterns."""
+    if error := _workspace_root_or_error():
+        return error
     needle = task.strip()
     if not needle:
         return "Provide a non-empty task description."
@@ -229,6 +322,12 @@ def suggest_sql_starting_points(task: str, limit: int = 6) -> str:
     tables = analytics_store.search_tables(workspace, needle, limit=max(1, min(limit, 12)))
     joins = analytics_store.search_joins(workspace, needle, limit=max(1, min(limit, 12)))
     metrics = analytics_store.search_metrics(workspace, needle, limit=max(1, min(limit, 12)))
+    filter_values = analytics_store.search_filter_values(workspace, needle, limit=max(1, min(limit, 12)))
+    mined_filter_candidates = sql_store.suggest_filter_candidates(
+        workspace,
+        needle,
+        limit=max(1, min(limit, 12)),
+    )
     patterns = sql_store.search_patterns(workspace, needle, limit=max(1, min(limit, 12)))
 
     payload = {
@@ -236,6 +335,29 @@ def suggest_sql_starting_points(task: str, limit: int = 6) -> str:
         "recommended_tables": tables[:limit],
         "recommended_joins": joins[:limit],
         "recommended_metrics": metrics[:limit],
+        "recommended_filters": [
+            {
+                "id": filter_value["id"],
+                "concept_name": filter_value["concept_name"],
+                "canonical_value": filter_value["canonical_value"],
+                "source_table": filter_value["source_table"],
+                "column_name": filter_value["column_name"],
+                "suggested_filter_sql": filter_value["suggested_filter_sql"],
+                "synonyms": filter_value["synonyms"][:6],
+            }
+            for filter_value in filter_values[:limit]
+        ],
+        "validated_filter_candidates": [
+            {
+                "column_name": candidate["column_name"],
+                "canonical_value": candidate["canonical_value"],
+                "suggested_filter_sql": candidate["suggested_filter_sql"],
+                "suggested_aliases": candidate["suggested_aliases"][:4],
+                "pattern_count": candidate["pattern_count"],
+                "patterns": candidate["patterns"][:3],
+            }
+            for candidate in mined_filter_candidates[:limit]
+        ],
         "validated_sql_patterns": [
             {
                 "id": pattern["id"],
@@ -281,6 +403,8 @@ def _candidate_validated_patterns(sql_text: str, tables: list[str], join_clauses
 @tool
 def verify_sql_query(sql_text: str) -> str:
     """Verify a SQL query against trusted repo context and validated SQL patterns. Use this before finalizing important SQL."""
+    if error := _workspace_root_or_error():
+        return error
     normalized_sql = sql_text.strip()
     if not normalized_sql:
         return "Provide non-empty SQL text."
@@ -412,9 +536,12 @@ ANALYTICS_CONTEXT_TOOLS = [
     search_analytics_tables,
     search_analytics_joins,
     search_analytics_metrics,
+    search_analytics_filter_values,
+    suggest_filter_candidates_from_validated_sql,
     suggest_sql_starting_points,
     verify_sql_query,
     register_analytics_table,
     register_analytics_join,
     register_analytics_metric,
+    register_analytics_filter_value,
 ]

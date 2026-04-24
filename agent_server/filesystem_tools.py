@@ -21,6 +21,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 APPROVAL_PREFIX = "APPROVE_WRITE:"
 APPROVAL_SERVER_LABEL = "local-filesystem"
 STAGED_WRITE_MARKER = "__staged_write_request__"
+NO_WORKSPACE_SELECTED_MARKER = "__NO_WORKSPACE_SELECTED__"
+NO_WORKSPACE_SELECTED_ERROR = (
+    "No repository is selected. Choose a repo from the repo picker before asking for repo-aware search, SQL, or file changes."
+)
 _FILE_READ_CACHE: dict[str, Any] = {}
 _TOOL_ACTIVITY_CACHE: dict[str, Any] = {}
 _TASK_STATE_CACHE: dict[str, Any] = {}
@@ -55,11 +59,33 @@ def utc_now() -> str:
 
 
 def workspace_root() -> Path:
-    header_root = get_request_headers().get("x-codex-workspace-root")
-    root = Path(header_root or os.getenv("FILES_WORKSPACE_ROOT", str(PROJECT_ROOT)))
+    return configured_workspace_root() or _unselected_workspace_root()
+
+
+def configured_workspace_root() -> Path | None:
+    header_root = (get_request_headers().get("x-codex-workspace-root") or "").strip()
+    env_root = (os.getenv("FILES_WORKSPACE_ROOT", "") or "").strip()
+    raw_root = header_root or env_root
+    if not raw_root or raw_root == NO_WORKSPACE_SELECTED_MARKER:
+        return None
+    root = Path(raw_root)
     if not root.is_absolute():
         root = (PROJECT_ROOT / root).resolve()
     return root.resolve()
+
+
+def workspace_selected() -> bool:
+    return configured_workspace_root() is not None
+
+
+def workspace_selection_error() -> str:
+    return NO_WORKSPACE_SELECTED_ERROR
+
+
+def _unselected_workspace_root() -> Path:
+    path = (PROJECT_ROOT / ".local" / "no-workspace-selected").resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def staged_write_store_path() -> Path:
@@ -1201,6 +1227,8 @@ def _git_repo_available() -> bool:
 @tool
 def git_repo_summary(max_commits: int = 8) -> str:
     """Summarize the current git repo state for the selected workspace: branch, changed files, and recent commits."""
+    if not workspace_selected():
+        return workspace_selection_error()
     if not _git_repo_available():
         return "The selected workspace is not a git repository."
 
@@ -1225,6 +1253,8 @@ def git_repo_summary(max_commits: int = 8) -> str:
 @tool
 def list_files(path: str = ".", recursive: bool = False) -> str:
     """List files or directories within the configured workspace root."""
+    if not workspace_selected():
+        return workspace_selection_error()
     base = _resolve_path(path)
     if not base.exists():
         return f"Path not found: {base}"
@@ -1243,6 +1273,8 @@ def list_files(path: str = ".", recursive: bool = False) -> str:
 @tool
 def workspace_overview(force_refresh: bool = False) -> str:
     """Return a cached structural overview of the workspace to help the agent understand the repo."""
+    if not workspace_selected():
+        return workspace_selection_error()
     index = build_workspace_index(force_refresh=force_refresh)
     summary = {
         "root": index["root"],
@@ -1259,6 +1291,8 @@ def workspace_overview(force_refresh: bool = False) -> str:
 @tool
 def ml_repo_overview(force_refresh: bool = False) -> str:
     """Return a compact ML-oriented map of the workspace: training, evaluation, inference, configs, stack signals, and likely risks."""
+    if not workspace_selected():
+        return workspace_selection_error()
     index = build_workspace_index(force_refresh=force_refresh)
     root = Path(index["root"])
     paths = [file_info["path"] for file_info in index["files"] if isinstance(file_info, dict)]
@@ -1385,6 +1419,8 @@ def ml_repo_overview(force_refresh: bool = False) -> str:
 @tool
 def ci_repo_overview(force_refresh: bool = False) -> str:
     """Return a compact CI/CD-oriented map of the workspace: workflow files, referenced scripts/actions, manifests, and likely failure points."""
+    if not workspace_selected():
+        return workspace_selection_error()
     index = build_workspace_index(force_refresh=force_refresh)
     root = Path(index["root"])
     paths = [file_info["path"] for file_info in index["files"] if isinstance(file_info, dict)]
@@ -1486,6 +1522,8 @@ def ci_repo_overview(force_refresh: bool = False) -> str:
 @tool
 def find_files_by_name(query: str, limit: int = 20) -> str:
     """Find files by partial name/path using the cached workspace index."""
+    if not workspace_selected():
+        return workspace_selection_error()
     index = build_workspace_index(force_refresh=False)
     needle = query.lower().strip()
     matches = [
@@ -1499,6 +1537,8 @@ def find_files_by_name(query: str, limit: int = 20) -> str:
 @tool
 def recent_file_reads(limit: int = 12) -> str:
     """Show recently read file ranges for this conversation so you can reuse them instead of rereading."""
+    if not workspace_selected():
+        return workspace_selection_error()
     records = _recent_reads(limit=max(1, min(limit, 50)))
     if not records:
         return "No file ranges have been read yet in this conversation."
@@ -1514,6 +1554,8 @@ def recent_file_reads(limit: int = 12) -> str:
 @tool
 def search_files(query: str, path: str = ".", glob: str | None = None) -> str:
     """Search for text in files under the workspace root. Returns matching file paths and lines."""
+    if not workspace_selected():
+        return workspace_selection_error()
     base = _resolve_path(path)
     normalized_glob = _normalize_glob(glob)
     if _is_overly_broad_glob(normalized_glob) and not _user_requested_repo_wide_search():
@@ -1586,6 +1628,8 @@ def search_code_blocks(
     max_matches: int = 5,
 ) -> str:
     """Search for keywords and return surrounding code blocks/snippets instead of full-file reads."""
+    if not workspace_selected():
+        return workspace_selection_error()
     base = _resolve_path(path)
     normalized_glob = _normalize_glob(glob)
     context = max(1, min(context_lines, 40))
@@ -1665,6 +1709,8 @@ def search_code_blocks(
 @tool
 def read_file(path: str, start_line: int = 1, end_line: int = 200, force_reread: bool = False) -> str:
     """Read a text file within the workspace root. Avoid rereading the same range unless you need different lines or set force_reread=true."""
+    if not workspace_selected():
+        return workspace_selection_error()
     target = _resolve_path(path)
     if not target.exists():
         return f"File not found: {target}"
@@ -1701,6 +1747,8 @@ def stage_file_write(
     mode: Literal["create", "overwrite"] = "overwrite",
 ) -> str:
     """Stage a file create/overwrite operation. The user must explicitly approve it in chat before it can be applied."""
+    if not workspace_selected():
+        return workspace_selection_error()
     if not writes_enabled():
         return "File writes are disabled by configuration."
 
@@ -1757,6 +1805,8 @@ def stage_patch_edit(
     replace_all: bool = False,
 ) -> str:
     """Stage an exact-text patch edit for a file. Preferred over raw overwrite for code edits."""
+    if not workspace_selected():
+        return workspace_selection_error()
     target = _resolve_path(path)
     if not target.exists() or target.is_dir():
         return f"File not found: {target}"
@@ -1854,6 +1904,8 @@ def _prepare_change(change: dict) -> dict:
 @tool
 def stage_change_plan(changes_json: str, summary: str = "Grouped file changes") -> str:
     """Stage a grouped multi-file change plan for one approval action."""
+    if not workspace_selected():
+        return workspace_selection_error()
     try:
         raw_changes = json.loads(changes_json)
     except json.JSONDecodeError as exc:

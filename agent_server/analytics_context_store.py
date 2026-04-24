@@ -72,6 +72,10 @@ def infer_table_layer(table_name: str) -> str:
     return ""
 
 
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 class AnalyticsContextStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -152,6 +156,29 @@ class AnalyticsContextStore:
 
                 CREATE INDEX IF NOT EXISTS idx_analytics_metrics_workspace_updated
                 ON analytics_metrics(workspace_root, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS analytics_filter_values (
+                  id TEXT PRIMARY KEY,
+                  workspace_root TEXT NOT NULL,
+                  concept_name TEXT NOT NULL,
+                  canonical_value TEXT NOT NULL DEFAULT '',
+                  source_table TEXT NOT NULL DEFAULT '',
+                  column_name TEXT NOT NULL DEFAULT '',
+                  operator TEXT NOT NULL DEFAULT '=',
+                  sql_value_expression TEXT NOT NULL DEFAULT '',
+                  description TEXT NOT NULL DEFAULT '',
+                  synonyms_json TEXT NOT NULL DEFAULT '[]',
+                  tags_json TEXT NOT NULL DEFAULT '[]',
+                  source TEXT NOT NULL DEFAULT 'manual',
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_analytics_filter_values_unique
+                ON analytics_filter_values(workspace_root, concept_name, source_table, column_name);
+
+                CREATE INDEX IF NOT EXISTS idx_analytics_filter_values_workspace_updated
+                ON analytics_filter_values(workspace_root, updated_at DESC);
                 """
             )
 
@@ -466,6 +493,114 @@ class AnalyticsContextStore:
             ).fetchone()
         return self._row_to_metric(updated)
 
+    def upsert_filter_value_context(
+        self,
+        *,
+        workspace_root: str,
+        concept_name: str,
+        canonical_value: str = "",
+        source_table: str = "",
+        column_name: str = "",
+        operator: str = "=",
+        sql_value_expression: str = "",
+        description: str = "",
+        synonyms: list[str] | None = None,
+        tags: list[str] | None = None,
+        source: str = "manual",
+    ) -> dict[str, Any]:
+        workspace_root = str(Path(workspace_root).resolve())
+        concept_name = " ".join(concept_name.split()).strip()
+        canonical_value = " ".join(canonical_value.split()).strip()
+        source_table = source_table.strip()
+        column_name = column_name.strip()
+        operator = " ".join(operator.split()).strip() or "="
+        sql_value_expression = " ".join(sql_value_expression.split()).strip()
+        description = " ".join(description.split()).strip()
+        if not concept_name:
+            raise ValueError("concept_name must be non-empty")
+        if not column_name:
+            raise ValueError("column_name must be non-empty")
+        if not canonical_value and not sql_value_expression:
+            raise ValueError("Provide canonical_value or sql_value_expression")
+
+        incoming_synonyms = _dedupe(synonyms or [], 20)
+        incoming_tags = _dedupe(tags or [], 20)
+        now = utc_now()
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM analytics_filter_values
+                WHERE workspace_root = ? AND concept_name = ? AND source_table = ? AND column_name = ?
+                """,
+                (workspace_root, concept_name, source_table, column_name),
+            ).fetchone()
+            if row is None:
+                filter_id = f"afilter_{uuid.uuid4().hex}"
+                conn.execute(
+                    """
+                    INSERT INTO analytics_filter_values (
+                      id, workspace_root, concept_name, canonical_value, source_table, column_name,
+                      operator, sql_value_expression, description, synonyms_json, tags_json,
+                      source, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        filter_id,
+                        workspace_root,
+                        concept_name,
+                        canonical_value,
+                        source_table,
+                        column_name,
+                        operator,
+                        sql_value_expression,
+                        description,
+                        _json_list(incoming_synonyms),
+                        _json_list(incoming_tags),
+                        source.strip() or "manual",
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                filter_id = row["id"]
+                conn.execute(
+                    """
+                    UPDATE analytics_filter_values
+                    SET canonical_value = ?, operator = ?, sql_value_expression = ?, description = ?,
+                        synonyms_json = ?, tags_json = ?, source = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        self._merge_text(row["canonical_value"], canonical_value),
+                        self._merge_text(row["operator"], operator),
+                        self._merge_text(row["sql_value_expression"], sql_value_expression),
+                        self._merge_text(row["description"], description),
+                        _json_list(
+                            self._merge_lists(
+                                _parse_json_list(row["synonyms_json"]), incoming_synonyms
+                            )
+                        ),
+                        _json_list(
+                            self._merge_lists(_parse_json_list(row["tags_json"]), incoming_tags)
+                        ),
+                        self._merge_text(row["source"], source),
+                        now,
+                        filter_id,
+                    ),
+                )
+            updated = conn.execute(
+                """
+                SELECT *
+                FROM analytics_filter_values
+                WHERE id = ?
+                """,
+                (filter_id,),
+            ).fetchone()
+        return self._row_to_filter_value(updated)
+
     def search_tables(self, workspace_root: str, query: str, limit: int = 8) -> list[dict[str, Any]]:
         workspace_root = str(Path(workspace_root).resolve())
         needle = f"%{query.strip().lower()}%"
@@ -540,6 +675,31 @@ class AnalyticsContextStore:
             ).fetchall()
         return [self._row_to_metric(row) for row in rows]
 
+    def search_filter_values(self, workspace_root: str, query: str, limit: int = 8) -> list[dict[str, Any]]:
+        workspace_root = str(Path(workspace_root).resolve())
+        needle = f"%{query.strip().lower()}%"
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM analytics_filter_values
+                WHERE workspace_root = ?
+                  AND (
+                    lower(concept_name) LIKE ?
+                    OR lower(canonical_value) LIKE ?
+                    OR lower(source_table) LIKE ?
+                    OR lower(column_name) LIKE ?
+                    OR lower(description) LIKE ?
+                    OR lower(synonyms_json) LIKE ?
+                    OR lower(tags_json) LIKE ?
+                  )
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (workspace_root, needle, needle, needle, needle, needle, needle, needle, max(1, min(limit, 20))),
+            ).fetchall()
+        return [self._row_to_filter_value(row) for row in rows]
+
     def list_tables(self, workspace_root: str) -> list[dict[str, Any]]:
         workspace_root = str(Path(workspace_root).resolve())
         with self._connect() as conn:
@@ -568,9 +728,24 @@ class AnalyticsContextStore:
             ).fetchall()
         return [self._row_to_join(row) for row in rows]
 
+    def list_filter_values(self, workspace_root: str) -> list[dict[str, Any]]:
+        workspace_root = str(Path(workspace_root).resolve())
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM analytics_filter_values
+                WHERE workspace_root = ?
+                ORDER BY updated_at DESC, concept_name ASC
+                """,
+                (workspace_root,),
+            ).fetchall()
+        return [self._row_to_filter_value(row) for row in rows]
+
     def overview(self, workspace_root: str, limit: int = 10) -> dict[str, Any]:
         tables = self.list_tables(workspace_root)
         joins = self.list_joins(workspace_root)
+        filter_values = self.list_filter_values(workspace_root)
         with self._connect() as conn:
             metric_rows = conn.execute(
                 """
@@ -587,9 +762,11 @@ class AnalyticsContextStore:
             "table_count": len(tables),
             "join_count": len(joins),
             "metric_count": len(metrics),
+            "filter_value_count": len(filter_values),
             "tables": tables[:limit],
             "joins": joins[:limit],
             "metrics": metrics[:limit],
+            "filter_values": filter_values[:limit],
         }
 
     @staticmethod
@@ -638,6 +815,36 @@ class AnalyticsContextStore:
             "source_table": row["source_table"],
             "default_time_column": row["default_time_column"],
             "dimensions": _parse_json_list(row["dimensions_json"]),
+            "synonyms": _parse_json_list(row["synonyms_json"]),
+            "tags": _parse_json_list(row["tags_json"]),
+            "source": row["source"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _row_to_filter_value(row: sqlite3.Row) -> dict[str, Any]:
+        canonical_value = row["canonical_value"]
+        sql_value_expression = row["sql_value_expression"]
+        column_name = row["column_name"]
+        operator = row["operator"] or "="
+        if sql_value_expression:
+            suggested_filter_sql = f"{column_name} {operator} {sql_value_expression}".strip()
+        elif canonical_value:
+            suggested_filter_sql = f"{column_name} {operator} {_sql_literal(canonical_value)}".strip()
+        else:
+            suggested_filter_sql = ""
+        return {
+            "id": row["id"],
+            "workspace_root": row["workspace_root"],
+            "concept_name": row["concept_name"],
+            "canonical_value": canonical_value,
+            "source_table": row["source_table"],
+            "column_name": column_name,
+            "operator": operator,
+            "sql_value_expression": sql_value_expression,
+            "suggested_filter_sql": suggested_filter_sql,
+            "description": row["description"],
             "synonyms": _parse_json_list(row["synonyms_json"]),
             "tags": _parse_json_list(row["tags_json"]),
             "source": row["source"],

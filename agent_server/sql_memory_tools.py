@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+from typing import Any
 
 from langchain_core.tools import tool
+from mlflow.genai.agent_server import get_request_headers
 
 from agent_server.analytics_context_tools import sync_validated_pattern_into_analytics_context
-from agent_server.filesystem_tools import workspace_root
+from agent_server.filesystem_tools import (
+    workspace_root,
+    workspace_selected,
+    workspace_selection_error,
+)
+from agent_server.memory_store import get_memory_store
 from agent_server.sql_memory_store import get_sql_store
+
+SQL_CODE_BLOCK_PATTERN = re.compile(
+    r"```(?P<lang>[A-Za-z0-9_+-]*)\n(?P<code>.*?)(?:```|$)",
+    re.S,
+)
 
 
 def _resolve_repo_path(path: str) -> Path:
@@ -26,6 +39,52 @@ def _split_tags(tags_csv: str) -> list[str]:
     return [value.strip() for value in tags_csv.split(",") if value.strip()]
 
 
+def _conversation_id() -> str | None:
+    headers = get_request_headers()
+    return (
+        headers.get("x-databricks-conversation-id")
+        or headers.get("x-codex-conversation-id")
+        or None
+    )
+
+
+def _item_text(item: dict[str, Any]) -> str:
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        if parts:
+            return "\n".join(parts)
+    return json.dumps(item, ensure_ascii=True)
+
+
+def _extract_sql_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    for match in SQL_CODE_BLOCK_PATTERN.finditer(text):
+        language = (match.group("lang") or "").strip().lower()
+        code = (match.group("code") or "").strip()
+        if not code:
+            continue
+        lowered = code.lower()
+        if language == "sql" or ("select" in lowered and "from" in lowered):
+            candidates.append(code)
+    if candidates:
+        return candidates
+
+    compact = text.strip()
+    lowered = compact.lower()
+    if "select" in lowered and "from" in lowered and len(compact) >= 40:
+        return [compact]
+    return []
+
+
 def _search_response(query: str, results: list[dict]) -> str:
     payload = {
         "query": query,
@@ -35,9 +94,48 @@ def _search_response(query: str, results: list[dict]) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
+def _workspace_root_or_error() -> str | None:
+    if not workspace_selected():
+        return workspace_selection_error()
+    return None
+
+
+def _save_sql_pattern_payload(
+    *,
+    name: str,
+    summary: str,
+    sql_text: str,
+    validation_notes: str,
+    dialect: str,
+    tags_csv: str,
+    source_path: str | None = None,
+) -> str:
+    payload = get_sql_store().save_pattern(
+        workspace_root=str(workspace_root()),
+        name=name.strip() or "Validated SQL pattern",
+        summary=summary.strip(),
+        sql_text=sql_text.strip(),
+        dialect=dialect.strip() or "spark_sql",
+        source_path=source_path,
+        validation_notes=validation_notes.strip(),
+        tags=_split_tags(tags_csv),
+    )
+    sync_validated_pattern_into_analytics_context(payload)
+    return json.dumps(
+        {
+            "saved": get_sql_store().summarize_pattern(payload),
+            "guidance": "Use get_validated_sql_pattern(id) later if you need the full SQL text.",
+        },
+        indent=2,
+        ensure_ascii=True,
+    )
+
+
 @tool
 def validated_sql_store_overview(limit: int = 10) -> str:
     """Show the current repo's validated SQL memory, including common tables, join patterns, and recent trusted queries."""
+    if error := _workspace_root_or_error():
+        return error
     payload = get_sql_store().overview(str(workspace_root()), limit=max(1, min(limit, 20)))
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
@@ -45,6 +143,8 @@ def validated_sql_store_overview(limit: int = 10) -> str:
 @tool
 def search_validated_sql_patterns(query: str, limit: int = 4) -> str:
     """Search validated SQL patterns for the current repo by business term, table, join, filter, or metric keyword. Returns lightweight summaries, not full SQL text."""
+    if error := _workspace_root_or_error():
+        return error
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
@@ -61,6 +161,8 @@ def search_validated_sql_patterns(query: str, limit: int = 4) -> str:
 @tool
 def search_validated_sql_by_table_or_join(query: str, limit: int = 4) -> str:
     """Find validated SQL patterns by table name, alias, or join clue so you can quickly reuse known-good data combinations. Returns lightweight summaries, not full SQL text."""
+    if error := _workspace_root_or_error():
+        return error
     needle = query.strip()
     if not needle:
         return "Provide a non-empty table or join query."
@@ -77,11 +179,115 @@ def search_validated_sql_by_table_or_join(query: str, limit: int = 4) -> str:
 @tool
 def get_validated_sql_pattern(pattern_id: str) -> str:
     """Read one validated SQL pattern in full, including the saved SQL text, tables, joins, and notes."""
+    if error := _workspace_root_or_error():
+        return error
     try:
         payload = get_sql_store().get_pattern(pattern_id.strip(), str(workspace_root()))
     except KeyError:
         return f"No validated SQL pattern found for id={pattern_id!r}."
     return json.dumps(payload, indent=2, ensure_ascii=True)
+
+
+@tool
+def save_validated_sql_from_chat_turn(
+    turn_index: int,
+    summary: str,
+    name: str = "",
+    validation_notes: str = "",
+    dialect: str = "spark_sql",
+    tags_csv: str = "",
+    block_index: int = 1,
+) -> str:
+    """Save a SQL query from a specific chat turn without repeating the full SQL in the tool arguments."""
+    if error := _workspace_root_or_error():
+        return error
+    conversation_id = _conversation_id()
+    if not conversation_id:
+        return "Chat-based SQL save is unavailable because this request has no conversation id."
+
+    message = get_memory_store().get_message_by_turn_index(conversation_id, int(turn_index))
+    if message is None:
+        return f"No chat turn found for turn_index={turn_index}."
+
+    item = json.loads(message.content_json)
+    sql_candidates = _extract_sql_candidates(_item_text(item))
+    if not sql_candidates:
+        return f"No SQL query found in chat turn {turn_index}."
+
+    selected_index = max(1, int(block_index)) - 1
+    if selected_index >= len(sql_candidates):
+        return (
+            f"Chat turn {turn_index} has only {len(sql_candidates)} SQL block(s). "
+            f"Use block_index between 1 and {len(sql_candidates)}."
+        )
+
+    result = _save_sql_pattern_payload(
+        name=name,
+        summary=summary,
+        sql_text=sql_candidates[selected_index],
+        validation_notes=validation_notes,
+        dialect=dialect,
+        tags_csv=tags_csv,
+        source_path=f"chat_turn:{turn_index}",
+    )
+    payload = json.loads(result)
+    payload["source_turn_index"] = int(turn_index)
+    payload["source_role"] = message.role
+    payload["saved_from"] = "chat_turn"
+    return json.dumps(payload, indent=2, ensure_ascii=True)
+
+
+@tool
+def save_latest_assistant_sql_pattern(
+    summary: str,
+    name: str = "",
+    validation_notes: str = "",
+    dialect: str = "spark_sql",
+    tags_csv: str = "",
+    search_hint: str = "",
+    lookback_turns: int = 12,
+) -> str:
+    """Save the most recent assistant SQL query from this chat without repeating the full SQL in the tool arguments."""
+    if error := _workspace_root_or_error():
+        return error
+    conversation_id = _conversation_id()
+    if not conversation_id:
+        return "Chat-based SQL save is unavailable because this request has no conversation id."
+
+    store = get_memory_store()
+    latest_turn = store.latest_turn_index(conversation_id)
+    hint = search_hint.strip().lower()
+    start_turn = max(1, latest_turn - max(1, min(int(lookback_turns), 40)) + 1)
+
+    for turn_index in range(latest_turn, start_turn - 1, -1):
+        message = store.get_message_by_turn_index(conversation_id, turn_index)
+        if message is None or message.role != "assistant":
+            continue
+        item = json.loads(message.content_json)
+        text = _item_text(item)
+        if hint and hint not in text.lower():
+            continue
+        sql_candidates = _extract_sql_candidates(text)
+        if not sql_candidates:
+            continue
+        result = _save_sql_pattern_payload(
+            name=name,
+            summary=summary,
+            sql_text=sql_candidates[0],
+            validation_notes=validation_notes,
+            dialect=dialect,
+            tags_csv=tags_csv,
+            source_path=f"chat_turn:{turn_index}",
+        )
+        payload = json.loads(result)
+        payload["source_turn_index"] = turn_index
+        payload["source_role"] = message.role
+        payload["saved_from"] = "latest_assistant_chat_sql"
+        return json.dumps(payload, indent=2, ensure_ascii=True)
+
+    if hint:
+        return f"No recent assistant SQL query matched search_hint={search_hint!r}."
+    return "No recent assistant SQL query was found in this chat."
 
 
 @tool
@@ -95,28 +301,19 @@ def save_validated_sql_pattern(
     tags_csv: str = "",
 ) -> str:
     """Save a known-good SQL query for the current repo so future SQL tasks can reuse its tables and joins. Returns a compact summary to avoid echoing the full SQL back into context."""
+    if error := _workspace_root_or_error():
+        return error
     trimmed_sql = sql_text.strip()
     if not trimmed_sql:
         return "Provide non-empty SQL text."
-    normalized_source = source_path.strip() or None
-    payload = get_sql_store().save_pattern(
-        workspace_root=str(workspace_root()),
-        name=name.strip() or "Validated SQL pattern",
-        summary=summary.strip(),
+    return _save_sql_pattern_payload(
+        name=name,
+        summary=summary,
         sql_text=trimmed_sql,
-        dialect=dialect.strip() or "spark_sql",
-        source_path=normalized_source,
-        validation_notes=validation_notes.strip(),
-        tags=_split_tags(tags_csv),
-    )
-    sync_validated_pattern_into_analytics_context(payload)
-    return json.dumps(
-        {
-            "saved": get_sql_store().summarize_pattern(payload),
-            "guidance": "Use get_validated_sql_pattern(id) later if you need the full SQL text.",
-        },
-        indent=2,
-        ensure_ascii=True,
+        validation_notes=validation_notes,
+        dialect=dialect,
+        tags_csv=tags_csv,
+        source_path=source_path.strip() or None,
     )
 
 
@@ -130,28 +327,20 @@ def save_validated_sql_file(
     tags_csv: str = "",
 ) -> str:
     """Save a SQL file from the current repo into validated SQL memory so its tables and joins become easy to reuse later. Returns a compact summary to avoid echoing the full SQL back into context."""
+    if error := _workspace_root_or_error():
+        return error
     target = _resolve_repo_path(path)
     if not target.exists():
         return f"No file found at {path!r}."
     sql_text = target.read_text(encoding="utf-8")
-    payload = get_sql_store().save_pattern(
-        workspace_root=str(workspace_root()),
+    return _save_sql_pattern_payload(
         name=name.strip() or target.stem,
-        summary=summary.strip(),
+        summary=summary,
         sql_text=sql_text,
-        dialect=dialect.strip() or "spark_sql",
+        validation_notes=validation_notes,
+        dialect=dialect,
+        tags_csv=tags_csv,
         source_path=str(target.relative_to(workspace_root())),
-        validation_notes=validation_notes.strip(),
-        tags=_split_tags(tags_csv),
-    )
-    sync_validated_pattern_into_analytics_context(payload)
-    return json.dumps(
-        {
-            "saved": get_sql_store().summarize_pattern(payload),
-            "guidance": "Use get_validated_sql_pattern(id) later if you need the full SQL text.",
-        },
-        indent=2,
-        ensure_ascii=True,
     )
 
 
@@ -160,6 +349,8 @@ SQL_MEMORY_TOOLS = [
     search_validated_sql_patterns,
     search_validated_sql_by_table_or_join,
     get_validated_sql_pattern,
+    save_validated_sql_from_chat_turn,
+    save_latest_assistant_sql_pattern,
     save_validated_sql_pattern,
     save_validated_sql_file,
 ]

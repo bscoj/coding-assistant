@@ -81,6 +81,7 @@ import {
 } from '../lib/local-app-settings';
 
 export const chatRouter: RouterType = Router();
+const NO_WORKSPACE_SELECTED_MARKER = '__NO_WORKSPACE_SELECTED__';
 
 const streamCache = new StreamCache();
 // Apply auth middleware to all chat routes
@@ -419,9 +420,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       ...(selectedChatModel
         ? { 'x-codex-model-endpoint': selectedChatModel }
         : {}),
-      ...(repo.path
-        ? { 'x-codex-workspace-root': repo.path }
-        : {}),
+      'x-codex-workspace-root': repo.path ?? NO_WORKSPACE_SELECTED_MARKER,
       // Forward OBO user token to the backend/serving endpoint
       ...(req.headers['x-forwarded-access-token']
         ? { 'x-forwarded-access-token': req.headers['x-forwarded-access-token'] as string }
@@ -744,9 +743,7 @@ chatRouter.post('/:id/approval', requireAuth, async (req: Request, res: Response
     'x-codex-memory-mode': memory.mode,
     'x-codex-context-mode': context.mode,
     'x-codex-response-mode': responseMode.mode,
-    ...(repo.path
-      ? { 'x-codex-workspace-root': repo.path }
-      : {}),
+    'x-codex-workspace-root': repo.path ?? NO_WORKSPACE_SELECTED_MARKER,
     ...(req.headers['x-forwarded-access-token']
       ? {
           'x-forwarded-access-token': req.headers[

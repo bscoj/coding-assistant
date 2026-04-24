@@ -26,10 +26,10 @@ from agent_server.filesystem_tools import (
     build_task_scratchpad_block,
     build_tool_memory_block,
     clear_filesystem_tool_context,
+    configured_workspace_root,
     detect_approval_response,
     record_task_request,
     set_filesystem_tool_context,
-    workspace_root,
 )
 from agent_server.chat_history_tools import CHAT_HISTORY_TOOLS
 from agent_server.analytics_context_tools import ANALYTICS_CONTEXT_TOOLS
@@ -77,10 +77,12 @@ Core behavior:
 - For ML or data-science repos, prefer ml_repo_overview() early so you can orient on training, evaluation, data pipelines, serving, and likely risks in one pass.
 - For CI/CD or GitHub Actions debugging, prefer ci_repo_overview() early so you can orient on workflows, referenced scripts, local actions, manifests, and likely failure points in one pass.
 - For CI/CD debugging, follow the failing workflow's references and recommended_first_reads before broad repo exploration.
-- For SQL or analytics tasks, prefer analytics_context_overview(), search_analytics_tables(), search_analytics_joins(), search_analytics_metrics(), suggest_sql_starting_points(), validated_sql_store_overview(), search_validated_sql_patterns(), and search_validated_sql_by_table_or_join() before broad repo search so you can reuse trusted tables, joins, and metrics.
+- For SQL or analytics tasks, prefer analytics_context_overview(), search_analytics_tables(), search_analytics_joins(), search_analytics_metrics(), search_analytics_filter_values(), suggest_filter_candidates_from_validated_sql(), suggest_sql_starting_points(), validated_sql_store_overview(), search_validated_sql_patterns(), and search_validated_sql_by_table_or_join() before broad repo search so you can reuse trusted tables, joins, metrics, and filter mappings.
 - For validated SQL memory, search summaries first and only call get_validated_sql_pattern() for the best 1-2 candidates that you actually need in full.
-- When the user confirms a SQL query is correct or trusted, save it with save_validated_sql_pattern() or save_validated_sql_file().
+- For plain-language filters, abbreviations, or business aliases, use search_analytics_filter_values() and reuse the exact suggested_filter_sql when it fits.
+- When the user confirms a SQL query is correct or trusted, save it with save_latest_assistant_sql_pattern(), save_validated_sql_from_chat_turn(), save_validated_sql_pattern(), or save_validated_sql_file() depending on where the SQL currently lives.
 - Only register analytics table, join, or metric context when the user explicitly asks to save or curate trusted analytics knowledge.
+- Only register analytics filter values when the user explicitly asks to save or curate trusted business vocabulary or filter mappings.
 - Before finalizing important SQL, run verify_sql_query() and use the findings to improve the answer.
 - If the user refers to code, errors, or decisions from earlier in this same chat, use search_chat_history() or read_chat_turn() before guessing.
 - Use injected skill blocks when they are present for task-specific workflows.
@@ -229,7 +231,8 @@ async def stream_handler(
 ) -> AsyncGenerator[ResponsesAgentStreamEvent, None]:
     request_items = [i.model_dump() for i in request.input]
     turn_items = current_turn_items(request_items)
-    current_workspace_root = str(workspace_root())
+    configured_root = configured_workspace_root()
+    current_workspace_root = str(configured_root) if configured_root else None
     request_started = perf_counter()
     output_items: list[dict] = []
     run_error: str | None = None
