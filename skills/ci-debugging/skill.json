@@ -1,0 +1,15 @@
+{
+  "name": "ci-debugging",
+  "description": "Debug broken CI/CD or GitHub Actions by mapping workflows, following referenced files only, and narrowing fast to the failing step.",
+  "triggers": [
+    "github actions",
+    "ci/cd",
+    "ci cd",
+    "broken ci",
+    "workflow failed",
+    "pipeline failed",
+    "cicd",
+    "build is failing",
+    "actions are broken"
+  ]
+}

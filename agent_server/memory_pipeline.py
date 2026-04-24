@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import asdict
@@ -607,19 +608,10 @@ def build_memory_block(state: MemoryState, mode: str | None = None) -> str | Non
     return "Conversation memory\n\n" + "\n\n".join(sections)
 
 
-def build_optimized_messages(
+def _optimized_message_parts(
     request_input: list[Any],
     state: MemoryState | None = None,
-    memory_mode: str | None = None,
-    user_profile_block: str | None = None,
-    repo_instruction_blocks: list[str] | None = None,
-    hook_instruction_blocks: list[str] | None = None,
-    tool_memory_block: str | None = None,
-    skill_blocks: list[str] | None = None,
-    workflow_blocks: list[str] | None = None,
-    response_style_block: str | None = None,
-    task_scratchpad_block: str | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     current_items = [normalize_item(item) for item in request_input]
     system_items = [item for item in current_items if item.get("role") == "system"]
     if state is not None:
@@ -638,31 +630,211 @@ def build_optimized_messages(
             safe_item = model_safe_item(item)
             if safe_item is not None:
                 recent_items.append(safe_item)
+    return current_items, system_items, recent_items
 
-    optimized: list[dict[str, Any]] = [item for item in system_items]
+
+def _system_context_blocks(
+    state: MemoryState | None = None,
+    memory_mode: str | None = None,
+    user_profile_block: str | None = None,
+    repo_instruction_blocks: list[str] | None = None,
+    hook_instruction_blocks: list[str] | None = None,
+    tool_memory_block: str | None = None,
+    skill_blocks: list[str] | None = None,
+    workflow_blocks: list[str] | None = None,
+    response_style_block: str | None = None,
+    task_scratchpad_block: str | None = None,
+) -> list[tuple[str, list[str]]]:
+    blocks: list[tuple[str, list[str]]] = []
     if user_profile_block:
-        optimized.append({"role": "system", "content": user_profile_block})
+        blocks.append(("user_profile", [user_profile_block]))
     if repo_instruction_blocks:
-        for block in repo_instruction_blocks:
-            optimized.append({"role": "system", "content": block})
+        blocks.append(("repo_instructions", list(repo_instruction_blocks)))
     if hook_instruction_blocks:
-        for block in hook_instruction_blocks:
-            optimized.append({"role": "system", "content": block})
+        blocks.append(("runtime_hook_instructions", list(hook_instruction_blocks)))
     if skill_blocks:
-        for skill_block in skill_blocks:
-            optimized.append({"role": "system", "content": skill_block})
+        blocks.append(("skills", list(skill_blocks)))
     if workflow_blocks:
-        for workflow_block in workflow_blocks:
-            optimized.append({"role": "system", "content": workflow_block})
+        blocks.append(("workflow_playbooks", list(workflow_blocks)))
     if response_style_block:
-        optimized.append({"role": "system", "content": response_style_block})
+        blocks.append(("response_style", [response_style_block]))
     if task_scratchpad_block:
-        optimized.append({"role": "system", "content": task_scratchpad_block})
+        blocks.append(("task_scratchpad", [task_scratchpad_block]))
     if tool_memory_block:
-        optimized.append({"role": "system", "content": tool_memory_block})
+        blocks.append(("tool_memory", [tool_memory_block]))
     memory_block = build_memory_block(state, memory_mode) if state is not None else None
     if memory_block:
-        optimized.append({"role": "system", "content": memory_block})
+        blocks.append(("conversation_memory", [memory_block]))
+    return blocks
+
+
+def _estimate_text_tokens(text: str) -> int:
+    compact = text.strip()
+    if not compact:
+        return 0
+    return max(1, math.ceil(len(compact) / 4))
+
+
+def _message_budget_text(item: dict[str, Any]) -> str:
+    text = item_text(item)
+    if text and text != "null":
+        return text
+    return json.dumps(item, ensure_ascii=True)
+
+
+def _budget_entry_from_text_blocks(name: str, blocks: list[str]) -> dict[str, Any]:
+    item_count = len(blocks)
+    char_count = sum(len(block) for block in blocks)
+    estimated_tokens = sum(_estimate_text_tokens(block) + 4 for block in blocks if block.strip())
+    return {
+        "name": name,
+        "kind": "system_block",
+        "item_count": item_count,
+        "char_count": char_count,
+        "estimated_tokens": estimated_tokens,
+    }
+
+
+def _budget_entry_from_messages(
+    name: str,
+    items: list[dict[str, Any]],
+    source: str,
+) -> dict[str, Any]:
+    role_counts: dict[str, int] = {}
+    char_count = 0
+    estimated_tokens = 0
+    for item in items:
+        role = str(item.get("role") or "unknown")
+        role_counts[role] = role_counts.get(role, 0) + 1
+        body = _message_budget_text(item)
+        char_count += len(body)
+        estimated_tokens += _estimate_text_tokens(body) + 4
+    return {
+        "name": name,
+        "kind": "message_context",
+        "item_count": len(items),
+        "char_count": char_count,
+        "estimated_tokens": estimated_tokens,
+        "source": source,
+        "role_counts": role_counts,
+    }
+
+
+def build_prompt_budget_breakdown(
+    request_input: list[Any],
+    state: MemoryState | None = None,
+    memory_mode: str | None = None,
+    user_profile_block: str | None = None,
+    repo_instruction_blocks: list[str] | None = None,
+    hook_instruction_blocks: list[str] | None = None,
+    tool_memory_block: str | None = None,
+    skill_blocks: list[str] | None = None,
+    workflow_blocks: list[str] | None = None,
+    response_style_block: str | None = None,
+    task_scratchpad_block: str | None = None,
+) -> dict[str, Any]:
+    current_items, system_items, recent_items = _optimized_message_parts(
+        request_input,
+        state,
+    )
+    context_blocks = _system_context_blocks(
+        state=state,
+        memory_mode=memory_mode,
+        user_profile_block=user_profile_block,
+        repo_instruction_blocks=repo_instruction_blocks,
+        hook_instruction_blocks=hook_instruction_blocks,
+        tool_memory_block=tool_memory_block,
+        skill_blocks=skill_blocks,
+        workflow_blocks=workflow_blocks,
+        response_style_block=response_style_block,
+        task_scratchpad_block=task_scratchpad_block,
+    )
+
+    entries: list[dict[str, Any]] = []
+    if system_items:
+        entries.append(
+            _budget_entry_from_messages(
+                "request_system_items",
+                system_items,
+                source="request_input",
+            )
+        )
+    for name, blocks in context_blocks:
+        if blocks:
+            entries.append(_budget_entry_from_text_blocks(name, blocks))
+    if recent_items:
+        entries.append(
+            _budget_entry_from_messages(
+                "recent_message_context",
+                recent_items,
+                source="memory_state_recent_messages" if state is not None else "request_input",
+            )
+        )
+
+    optimized_role_counts: dict[str, int] = {}
+    optimized_message_count = 0
+    for item in system_items:
+        role = str(item.get("role") or "unknown")
+        optimized_role_counts[role] = optimized_role_counts.get(role, 0) + 1
+        optimized_message_count += 1
+    for _, blocks in context_blocks:
+        optimized_role_counts["system"] = optimized_role_counts.get("system", 0) + len(blocks)
+        optimized_message_count += len(blocks)
+    for item in recent_items:
+        role = str(item.get("role") or "unknown")
+        optimized_role_counts[role] = optimized_role_counts.get(role, 0) + 1
+        optimized_message_count += 1
+
+    total_estimated_tokens = sum(entry["estimated_tokens"] for entry in entries)
+    total_chars = sum(entry["char_count"] for entry in entries)
+    top_entries = sorted(entries, key=lambda entry: entry["estimated_tokens"], reverse=True)[:5]
+
+    return {
+        "estimate_method": "chars_div_4_plus_message_overhead",
+        "total_estimated_prompt_tokens": total_estimated_tokens,
+        "total_char_count": total_chars,
+        "optimized_message_count": optimized_message_count,
+        "optimized_role_counts": optimized_role_counts,
+        "entries": entries,
+        "top_entries": top_entries,
+        "has_memory_state": state is not None,
+        "request_item_count": len(current_items),
+    }
+
+
+def build_optimized_messages(
+    request_input: list[Any],
+    state: MemoryState | None = None,
+    memory_mode: str | None = None,
+    user_profile_block: str | None = None,
+    repo_instruction_blocks: list[str] | None = None,
+    hook_instruction_blocks: list[str] | None = None,
+    tool_memory_block: str | None = None,
+    skill_blocks: list[str] | None = None,
+    workflow_blocks: list[str] | None = None,
+    response_style_block: str | None = None,
+    task_scratchpad_block: str | None = None,
+) -> list[dict[str, Any]]:
+    current_items, system_items, recent_items = _optimized_message_parts(
+        request_input,
+        state,
+    )
+
+    optimized: list[dict[str, Any]] = [item for item in system_items]
+    for _, blocks in _system_context_blocks(
+        state=state,
+        memory_mode=memory_mode,
+        user_profile_block=user_profile_block,
+        repo_instruction_blocks=repo_instruction_blocks,
+        hook_instruction_blocks=hook_instruction_blocks,
+        tool_memory_block=tool_memory_block,
+        skill_blocks=skill_blocks,
+        workflow_blocks=workflow_blocks,
+        response_style_block=response_style_block,
+        task_scratchpad_block=task_scratchpad_block,
+    ):
+        for block in blocks:
+            optimized.append({"role": "system", "content": block})
     optimized.extend(recent_items)
     return optimized if optimized else current_items
 

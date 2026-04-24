@@ -26,6 +26,15 @@ def _split_tags(tags_csv: str) -> list[str]:
     return [value.strip() for value in tags_csv.split(",") if value.strip()]
 
 
+def _search_response(query: str, results: list[dict]) -> str:
+    payload = {
+        "query": query,
+        "results": results,
+        "guidance": "Search results are summaries only. Use get_validated_sql_pattern(id) only for the best 1-2 candidates when you need the full SQL text.",
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=True)
+
+
 @tool
 def validated_sql_store_overview(limit: int = 10) -> str:
     """Show the current repo's validated SQL memory, including common tables, join patterns, and recent trusted queries."""
@@ -34,37 +43,35 @@ def validated_sql_store_overview(limit: int = 10) -> str:
 
 
 @tool
-def search_validated_sql_patterns(query: str, limit: int = 8) -> str:
-    """Search validated SQL patterns for the current repo by business term, table, join, filter, or metric keyword."""
+def search_validated_sql_patterns(query: str, limit: int = 4) -> str:
+    """Search validated SQL patterns for the current repo by business term, table, join, filter, or metric keyword. Returns lightweight summaries, not full SQL text."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
-    payload = {
-        "query": needle,
-        "results": get_sql_store().search_patterns(
+    return _search_response(
+        needle,
+        get_sql_store().search_patterns(
             str(workspace_root()),
             needle,
-            limit=max(1, min(limit, 20)),
+            limit=max(1, min(limit, 10)),
         ),
-    }
-    return json.dumps(payload, indent=2, ensure_ascii=True)
+    )
 
 
 @tool
-def search_validated_sql_by_table_or_join(query: str, limit: int = 8) -> str:
-    """Find validated SQL patterns by table name, alias, or join clue so you can quickly reuse known-good data combinations."""
+def search_validated_sql_by_table_or_join(query: str, limit: int = 4) -> str:
+    """Find validated SQL patterns by table name, alias, or join clue so you can quickly reuse known-good data combinations. Returns lightweight summaries, not full SQL text."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty table or join query."
-    payload = {
-        "query": needle,
-        "results": get_sql_store().search_by_table_or_join(
+    return _search_response(
+        needle,
+        get_sql_store().search_by_table_or_join(
             str(workspace_root()),
             needle,
-            limit=max(1, min(limit, 20)),
+            limit=max(1, min(limit, 10)),
         ),
-    }
-    return json.dumps(payload, indent=2, ensure_ascii=True)
+    )
 
 
 @tool
@@ -87,7 +94,7 @@ def save_validated_sql_pattern(
     dialect: str = "spark_sql",
     tags_csv: str = "",
 ) -> str:
-    """Save a known-good SQL query for the current repo so future SQL tasks can reuse its tables and joins."""
+    """Save a known-good SQL query for the current repo so future SQL tasks can reuse its tables and joins. Returns a compact summary to avoid echoing the full SQL back into context."""
     trimmed_sql = sql_text.strip()
     if not trimmed_sql:
         return "Provide non-empty SQL text."
@@ -103,7 +110,14 @@ def save_validated_sql_pattern(
         tags=_split_tags(tags_csv),
     )
     sync_validated_pattern_into_analytics_context(payload)
-    return json.dumps(payload, indent=2, ensure_ascii=True)
+    return json.dumps(
+        {
+            "saved": get_sql_store().summarize_pattern(payload),
+            "guidance": "Use get_validated_sql_pattern(id) later if you need the full SQL text.",
+        },
+        indent=2,
+        ensure_ascii=True,
+    )
 
 
 @tool
@@ -115,7 +129,7 @@ def save_validated_sql_file(
     dialect: str = "spark_sql",
     tags_csv: str = "",
 ) -> str:
-    """Save a SQL file from the current repo into validated SQL memory so its tables and joins become easy to reuse later."""
+    """Save a SQL file from the current repo into validated SQL memory so its tables and joins become easy to reuse later. Returns a compact summary to avoid echoing the full SQL back into context."""
     target = _resolve_repo_path(path)
     if not target.exists():
         return f"No file found at {path!r}."
@@ -131,7 +145,14 @@ def save_validated_sql_file(
         tags=_split_tags(tags_csv),
     )
     sync_validated_pattern_into_analytics_context(payload)
-    return json.dumps(payload, indent=2, ensure_ascii=True)
+    return json.dumps(
+        {
+            "saved": get_sql_store().summarize_pattern(payload),
+            "guidance": "Use get_validated_sql_pattern(id) later if you need the full SQL text.",
+        },
+        indent=2,
+        ensure_ascii=True,
+    )
 
 
 SQL_MEMORY_TOOLS = [

@@ -17,7 +17,7 @@ Use the validated SQL store before broad repo exploration when the task is about
    - filters
    - metric names
 3. Use `search_validated_sql_by_table_or_join()` when you already know one table, alias, or join clue and want nearby trusted patterns fast.
-4. If a hit looks promising, inspect it with `get_validated_sql_pattern()`.
+4. Search tools return lightweight summaries. If a hit looks promising, inspect only the best 1-2 candidates with `get_validated_sql_pattern()`.
 5. Only fall back to broad file search when the validated store does not cover the task.
 6. When the user confirms a query is correct, trusted, production-safe, or known-good, save it with:
    - `save_validated_sql_pattern()` for query text in the chat

@@ -35,6 +35,13 @@ def normalize_sql(sql: str) -> str:
     return "\n".join(line.rstrip() for line in sql.strip().splitlines()).strip()
 
 
+def sql_line_count(sql: str) -> int:
+    normalized = normalize_sql(sql)
+    if not normalized:
+        return 0
+    return len(normalized.splitlines())
+
+
 def _sql_hash(sql: str) -> str:
     normalized = " ".join(normalize_sql(sql).split()).strip()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -316,7 +323,7 @@ class ValidatedSqlStore:
                     max(1, min(limit, 20)),
                 ),
             ).fetchall()
-        return [self._row_to_pattern(row) for row in rows]
+        return [self._row_to_pattern_summary(row) for row in rows]
 
     def overview(self, workspace_root: str, limit: int = 10) -> dict[str, Any]:
         workspace_root = str(Path(workspace_root).resolve())
@@ -384,10 +391,41 @@ class ValidatedSqlStore:
             ).fetchall()
         patterns = [self._row_to_pattern(row) for row in rows]
         return [
-            pattern
+            self._pattern_summary(pattern)
             for pattern in patterns
             if _matches_table_or_join(pattern, trimmed)
         ][: max(1, min(limit, 20))]
+
+    def summarize_pattern(self, pattern: dict[str, Any]) -> dict[str, Any]:
+        return self._pattern_summary(pattern)
+
+    @staticmethod
+    def _pattern_summary(pattern: dict[str, Any]) -> dict[str, Any]:
+        sql_text = str(pattern.get("sql_text") or "")
+        return {
+            "id": pattern["id"],
+            "workspace_root": pattern["workspace_root"],
+            "name": pattern["name"],
+            "summary": pattern["summary"],
+            "dialect": pattern["dialect"],
+            "source_path": pattern["source_path"],
+            "validation_notes": pattern["validation_notes"],
+            "tags": list(pattern["tags"]),
+            "tables": list(pattern["tables"])[:8],
+            "joins": list(pattern["joins"])[:4],
+            "table_count": len(pattern["tables"]),
+            "join_count": len(pattern["joins"]),
+            "sql_char_count": len(sql_text),
+            "sql_line_count": sql_line_count(sql_text),
+            "use_count": pattern["use_count"],
+            "created_at": pattern["created_at"],
+            "updated_at": pattern["updated_at"],
+            "last_used_at": pattern["last_used_at"],
+        }
+
+    @classmethod
+    def _row_to_pattern_summary(cls, row: sqlite3.Row) -> dict[str, Any]:
+        return cls._pattern_summary(cls._row_to_pattern(row))
 
     @staticmethod
     def _row_to_pattern(row: sqlite3.Row) -> dict[str, Any]:

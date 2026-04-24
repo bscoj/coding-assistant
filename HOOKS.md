@@ -18,6 +18,7 @@ Events include:
 
 - `SessionStart`
 - `BeforeAgent`
+- `PromptBudget`
 - `PreToolUse`
 - `PostToolUse`
 - `PostToolUseFailure`
@@ -26,6 +27,10 @@ Events include:
 - `StopFailure`
 
 This stays local to your machine.
+
+`PromptBudget` records an estimated prompt-cost breakdown by block, including
+items like repo instructions, profile memory, task scratchpad, tool memory,
+conversation memory, and recent raw message context.
 
 ## Repo-local hook file
 

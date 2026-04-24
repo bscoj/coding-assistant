@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import uuid
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import unified_diff
@@ -24,6 +25,20 @@ _FILE_READ_CACHE: dict[str, Any] = {}
 _TOOL_ACTIVITY_CACHE: dict[str, Any] = {}
 _TASK_STATE_CACHE: dict[str, Any] = {}
 _WORKSPACE_INDEX_CACHE: dict[str, dict[str, Any]] = {}
+_RUN_SCRIPT_PATTERN = re.compile(
+    r"""(?ix)
+    (?:
+        \b(?:bash|sh|python|python3|node|pwsh|powershell)\s+
+        |
+        (?<![\w./-])
+    )
+    (
+        \.?\.?/[\w./-]+(?:\.(?:sh|py|ps1|js|ts|mjs|cjs))?
+        |
+        [\w./-]+/(?:[\w./-]+)(?:\.(?:sh|py|ps1|js|ts|mjs|cjs))?
+    )
+    """
+)
 
 
 def _safe_state_path(env_name: str, default_name: str) -> Path:
@@ -702,6 +717,203 @@ def _top_matches(paths: list[str], keywords: tuple[str, ...], limit: int = 8) ->
     return output
 
 
+def _read_small_text(path: Path, max_bytes: int = 40000) -> str:
+    try:
+        if not path.is_file() or path.stat().st_size > max_bytes:
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _extract_yaml_section_keys(text: str, section_name: str) -> list[str]:
+    keys: list[str] = []
+    seen: set[str] = set()
+    in_section = False
+    section_indent = 0
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if not in_section:
+            if stripped == f"{section_name}:":
+                in_section = True
+                section_indent = indent
+            continue
+        if indent <= section_indent:
+            break
+        if indent == section_indent + 2 and stripped.endswith(":"):
+            key = stripped[:-1].strip().strip("'\"")
+            if key and key not in seen:
+                seen.add(key)
+                keys.append(key)
+    return keys[:12]
+
+
+def _extract_workflow_name(text: str, fallback: str) -> str:
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("name:"):
+            value = line.split(":", 1)[1].strip().strip("'\"")
+            return value or fallback
+        break
+    return fallback
+
+
+def _extract_uses_values(text: str) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or not line.startswith("uses:"):
+            continue
+        value = line.split(":", 1)[1].strip().strip("'\"")
+        if value and value not in seen:
+            seen.add(value)
+            values.append(value)
+    return values[:20]
+
+
+def _extract_run_commands(text: str) -> list[str]:
+    commands: list[str] = []
+    seen: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or not line.startswith("run:"):
+            continue
+        command = " ".join(line.split(":", 1)[1].strip().split())
+        if not command:
+            continue
+        compact = _truncate_line(command, 140)
+        if compact not in seen:
+            seen.add(compact)
+            commands.append(compact)
+    return commands[:12]
+
+
+def _extract_script_paths_from_commands(commands: list[str]) -> list[str]:
+    scripts: list[str] = []
+    seen: set[str] = set()
+    for command in commands:
+        for match in _RUN_SCRIPT_PATTERN.finditer(command):
+            candidate = match.group(1).strip().strip("'\"")
+            normalized = candidate[2:] if candidate.startswith("./") else candidate
+            normalized = normalized.lstrip("/")
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            scripts.append(normalized)
+    return scripts[:20]
+
+
+def _classify_ci_systems(paths: list[str]) -> list[str]:
+    systems: list[str] = []
+    lowered = [path.lower() for path in paths]
+
+    def add(name: str, predicate: bool) -> None:
+        if predicate and name not in systems:
+            systems.append(name)
+
+    add("github_actions", any(path.startswith(".github/workflows/") for path in lowered))
+    add("gitlab_ci", any(path == ".gitlab-ci.yml" or path.startswith(".gitlab/") for path in lowered))
+    add("circleci", any(path.startswith(".circleci/") for path in lowered))
+    add("jenkins", any(path.endswith("jenkinsfile") for path in lowered))
+    add("azure_pipelines", any("azure-pipelines" in path for path in lowered))
+    add("buildkite", any(path.startswith(".buildkite/") for path in lowered))
+    add("bitbucket_pipelines", any(path == "bitbucket-pipelines.yml" for path in lowered))
+    return systems
+
+
+def _ordered_unique(items: list[str], limit: int = 20) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        output.append(item)
+        if len(output) >= limit:
+            break
+    return output
+
+
+def _workflow_summary(root: Path, rel_path: str) -> dict[str, Any]:
+    text = _read_small_text(root / rel_path)
+    uses_values = _extract_uses_values(text)
+    local_workflows = [value[2:] for value in uses_values if value.startswith("./.github/workflows/")]
+    local_actions = [
+        value[2:]
+        for value in uses_values
+        if value.startswith("./") and not value.startswith("./.github/workflows/")
+    ]
+    external_actions = [value for value in uses_values if not value.startswith("./")]
+    run_commands = _extract_run_commands(text)
+    scripts = _extract_script_paths_from_commands(run_commands)
+    triggers = _extract_yaml_section_keys(text, "on")
+    jobs = _extract_yaml_section_keys(text, "jobs")
+    return {
+        "path": rel_path,
+        "name": _extract_workflow_name(text, Path(rel_path).stem),
+        "triggers": triggers[:8],
+        "jobs": jobs[:10],
+        "local_reusable_workflows": local_workflows[:6],
+        "local_actions": local_actions[:6],
+        "referenced_scripts": scripts[:8],
+        "notable_run_commands": run_commands[:5],
+        "external_actions": external_actions[:6],
+    }
+
+
+def _existing_repo_paths(root: Path, relative_paths: list[str]) -> tuple[list[str], list[str]]:
+    existing: list[str] = []
+    missing: list[str] = []
+    for rel_path in _ordered_unique(relative_paths, limit=40):
+        try:
+            target = _resolve_path_with_root(rel_path, root)
+        except ValueError:
+            missing.append(rel_path)
+            continue
+        if target.exists():
+            existing.append(rel_path)
+        else:
+            missing.append(rel_path)
+    return existing, missing
+
+
+def _ci_risks(
+    workflow_summaries: list[dict[str, Any]],
+    missing_local_references: list[str],
+    manifest_files: list[str],
+) -> list[str]:
+    risks: list[str] = []
+    if missing_local_references:
+        risks.append(
+            "Some workflow-local references do not exist in the repo: "
+            + ", ".join(missing_local_references[:6])
+        )
+    if workflow_summaries and not manifest_files:
+        risks.append(
+            "CI workflows are present, but obvious build/test manifests were not detected from filenames."
+        )
+    if len(workflow_summaries) >= 5:
+        risks.append(
+            "There are several workflow files. Start from the failing workflow and follow only its referenced scripts or reusable workflows."
+        )
+    if any(summary["local_reusable_workflows"] for summary in workflow_summaries):
+        risks.append(
+            "Reusable workflows are in play, so failures may be defined one layer away from the top-level workflow file."
+        )
+    if any(summary["local_actions"] for summary in workflow_summaries):
+        risks.append(
+            "Local GitHub Actions are referenced. Check their action.yml and implementation files before assuming the issue is in workflow YAML."
+        )
+    return risks[:5]
+
+
 def _keyword_file_hits(root: Path, pattern: str, limit: int = 12) -> list[str]:
     rg = shutil.which("rg")
     if not rg:
@@ -1165,6 +1377,107 @@ def ml_repo_overview(force_refresh: bool = False) -> str:
             data_files=data_files,
             test_files=test_files,
             notebook_files=notebook_files,
+        ),
+    }
+    return json.dumps(summary, indent=2, ensure_ascii=True)
+
+
+@tool
+def ci_repo_overview(force_refresh: bool = False) -> str:
+    """Return a compact CI/CD-oriented map of the workspace: workflow files, referenced scripts/actions, manifests, and likely failure points."""
+    index = build_workspace_index(force_refresh=force_refresh)
+    root = Path(index["root"])
+    paths = [file_info["path"] for file_info in index["files"] if isinstance(file_info, dict)]
+
+    workflow_files = _ordered_unique(
+        [
+            path
+            for path in paths
+            if path.startswith(".github/workflows/")
+            or path == ".gitlab-ci.yml"
+            or path.startswith(".circleci/")
+            or path.endswith("Jenkinsfile")
+            or "azure-pipelines" in path
+            or path == "bitbucket-pipelines.yml"
+            or path.startswith(".buildkite/")
+        ],
+        limit=20,
+    )
+    local_action_files = _ordered_unique(
+        [
+            path
+            for path in paths
+            if path.startswith(".github/actions/") and Path(path).name in {"action.yml", "action.yaml"}
+        ],
+        limit=12,
+    )
+    manifest_files = _top_matches(
+        paths,
+        (
+            "package.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "bun.lock",
+            "pyproject.toml",
+            "requirements",
+            "poetry.lock",
+            "uv.lock",
+            "dockerfile",
+            "docker-compose",
+            "makefile",
+            "gradle",
+            "pom.xml",
+            "cargo.toml",
+            "go.mod",
+            ".nvmrc",
+            ".tool-versions",
+        ),
+        limit=16,
+    )
+
+    workflow_summaries = [
+        _workflow_summary(root, rel_path)
+        for rel_path in workflow_files[:8]
+    ]
+    referenced_local_paths = _ordered_unique(
+        [
+            ref
+            for summary in workflow_summaries
+            for ref in (
+                list(summary["local_reusable_workflows"])
+                + list(summary["local_actions"])
+                + list(summary["referenced_scripts"])
+            )
+        ],
+        limit=30,
+    )
+    existing_local_references, missing_local_references = _existing_repo_paths(
+        root,
+        referenced_local_paths,
+    )
+    recommended_first_reads = _ordered_unique(
+        workflow_files[:4]
+        + existing_local_references[:8]
+        + local_action_files[:4]
+        + manifest_files[:6],
+        limit=16,
+    )
+
+    summary = {
+        "root": index["root"],
+        "file_count": index["file_count"],
+        "ci_systems_detected": _classify_ci_systems(paths),
+        "workflow_files": workflow_files[:12],
+        "local_action_files": local_action_files[:8],
+        "build_or_test_manifests": manifest_files,
+        "workflow_summaries": workflow_summaries,
+        "referenced_local_paths": existing_local_references[:16],
+        "missing_local_references": missing_local_references[:12],
+        "recommended_first_reads": recommended_first_reads,
+        "likely_risks_or_gaps": _ci_risks(
+            workflow_summaries=workflow_summaries,
+            missing_local_references=missing_local_references,
+            manifest_files=manifest_files,
         ),
     }
     return json.dumps(summary, indent=2, ensure_ascii=True)
@@ -1645,6 +1958,7 @@ def apply_staged_write_by_approval_id(operation_id: str) -> str:
 FILESYSTEM_TOOLS = [
     workspace_overview,
     ml_repo_overview,
+    ci_repo_overview,
     find_files_by_name,
     recent_file_reads,
     git_repo_summary,

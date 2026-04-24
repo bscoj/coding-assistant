@@ -129,6 +129,8 @@ That guide covers:
 - the backend writes local hook events to `.local/runtime_hook_events.jsonl`
   so we can debug slow requests and noisy tool usage without sending that data
   anywhere else
+- hook events now include a `PromptBudget` record with an estimated per-block
+  prompt breakdown so we can see which always-on context is expensive
 
 See [HOOKS.md](HOOKS.md) for the hook file format.
 
