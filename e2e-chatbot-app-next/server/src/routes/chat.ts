@@ -177,6 +177,22 @@ function extractAssistantTextFromResponsesOutput(output: unknown): string {
   return parts.join('').trim();
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+function isStreamingGuardrailError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes('output guardrail') &&
+    message.includes('streaming mode')
+  );
+}
+
 /**
  * POST /api/chat - Send a message and get streaming response
  *
@@ -412,35 +428,53 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
         : {}),
     };
 
-    const result = streamText({
+    const baseModelParams = {
       model,
       messages: modelMessages,
       providerOptions: {
         databricks: { includeTrace: true },
       },
-      includeRawChunks: true,
       headers: requestHeaders,
-      onChunk: ({ chunk }) => {
-        if (chunk.type === 'raw') {
-          const raw = chunk.rawValue as any;
-          // Extract trace in Databricks serving endpoint output format, if present
-          if (raw?.type === 'response.output_item.done') {
-            const traceIdFromChunk =
-              raw?.databricks_output?.trace?.info?.trace_id;
-            if (typeof traceIdFromChunk === 'string') {
-              traceId = traceIdFromChunk;
+    } as const;
+
+    let result: ReturnType<typeof streamText> | undefined;
+    let streamInitError: unknown;
+
+    try {
+      result = streamText({
+        ...baseModelParams,
+        includeRawChunks: true,
+        onChunk: ({ chunk }) => {
+          if (chunk.type === 'raw') {
+            const raw = chunk.rawValue as any;
+            // Extract trace in Databricks serving endpoint output format, if present
+            if (raw?.type === 'response.output_item.done') {
+              const traceIdFromChunk =
+                raw?.databricks_output?.trace?.info?.trace_id;
+              if (typeof traceIdFromChunk === 'string') {
+                traceId = traceIdFromChunk;
+              }
+            }
+            // Extract trace from MLflow AgentServer output format, if present
+            if (!traceId && typeof raw?.trace_id === 'string') {
+              traceId = raw.trace_id;
             }
           }
-          // Extract trace from MLflow AgentServer output format, if present
-          if (!traceId && typeof raw?.trace_id === 'string') {
-            traceId = raw.trace_id;
-          }
-        }
-      },
-      onFinish: ({ usage }) => {
-        finalUsage = usage;
-      },
-    });
+        },
+        onFinish: ({ usage }) => {
+          finalUsage = usage;
+        },
+      });
+    } catch (error) {
+      streamInitError = error;
+      console.warn(
+        '[Chat] Streaming initialization failed; will fall back to generateText',
+        {
+          message: getErrorMessage(error),
+          guardrailStreamingMismatch: isStreamingGuardrailError(error),
+        },
+      );
+    }
 
     /**
      * We manually read from toUIMessageStream instead of using writer.merge
@@ -457,6 +491,35 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       // rather than the AI SDK's default short-id format (e.g. "Xt8nZiQRj1fS4yiU").
       generateId: generateUUID,
       execute: async ({ writer }) => {
+        const runGenerateFallback = async (reason: string) => {
+          console.log(`[Chat] ${reason}; falling back to generateText...`);
+          const fallbackResult = await fallbackToGenerateText(
+            baseModelParams,
+            writer,
+          );
+
+          finalUsage = fallbackResult?.usage;
+          traceId = fallbackResult?.traceId ?? null;
+        };
+
+        if (!result) {
+          await runGenerateFallback(
+            streamInitError
+              ? `Streaming unavailable (${getErrorMessage(streamInitError)})`
+              : 'Streaming unavailable',
+          );
+
+          if (titlePromise) {
+            const generatedTitle = await resolveTitleQuickly(titlePromise);
+            if (generatedTitle) {
+              writer.write({ type: 'data-title', data: generatedTitle });
+            }
+          }
+
+          writer.write({ type: 'data-traceId', data: traceId });
+          return;
+        }
+
         // Manually drain the AI stream so we can append the traceId data part
         // after all model chunks are processed (traceId is captured via onChunk).
         // result.toUIMessageStream() converts TextStreamPart → UIMessageChunk:
@@ -464,30 +527,38 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
         // - start-step/finish-step: strips extra fields
         // - finish: strips rawFinishReason/totalUsage
         // - raw: dropped (trace_id captured via onChunk above)
-        const aiStream = result.toUIMessageStream<ChatMessage>({
-          sendReasoning: true,
-          sendSources: true,
-          sendFinish: false,
-          onError: (error) => {
-            const msg =
-              error instanceof Error ? error.message : String(error);
-            writer.onError?.(error);
-            return msg;
-          },
-        });
+        try {
+          const aiStream = result.toUIMessageStream<ChatMessage>({
+            sendReasoning: true,
+            sendSources: true,
+            sendFinish: false,
+            onError: (error) => {
+              const msg = getErrorMessage(error);
+              writer.onError?.(error);
+              return msg;
+            },
+          });
 
-        const { failed } = await drainStreamToWriter(aiStream, writer);
+          const { failed, errorText } = await drainStreamToWriter(aiStream, writer);
 
-        if (failed) {
-          console.log('Streaming failed, falling back to generateText...');
-          const fallbackResult = await fallbackToGenerateText(
-            { model, messages: modelMessages, headers: requestHeaders },
-            writer,
+          if (failed) {
+            await runGenerateFallback(
+              errorText ? `Streaming failed (${errorText})` : 'Streaming failed',
+            );
+          }
+        } catch (error) {
+          console.warn(
+            '[Chat] Streaming execution failed; will fall back to generateText',
+            {
+              message: getErrorMessage(error),
+              guardrailStreamingMismatch: isStreamingGuardrailError(error),
+            },
           );
-
-          finalUsage = fallbackResult?.usage;
-          traceId = fallbackResult?.traceId ?? null;
+          await runGenerateFallback(
+            `Streaming execution failed (${getErrorMessage(error)})`,
+          );
         }
+
         if (titlePromise) {
           const generatedTitle = await resolveTitleQuickly(titlePromise);
           if (generatedTitle) {
