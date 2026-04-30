@@ -195,6 +195,18 @@ function isStreamingGuardrailError(error: unknown): boolean {
   );
 }
 
+function hasTokenUsage(usage: LanguageModelUsage | undefined): boolean {
+  if (!usage) {
+    return false;
+  }
+
+  return (
+    (usage.inputTokens ?? 0) > 0 ||
+    (usage.outputTokens ?? 0) > 0 ||
+    (usage.totalTokens ?? 0) > 0
+  );
+}
+
 /**
  * POST /api/chat - Send a message and get streaming response
  *
@@ -493,8 +505,8 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
             }
           }
         },
-        onFinish: ({ usage, finishReason }) => {
-          finalUsage = usage;
+        onFinish: ({ usage, totalUsage, finishReason }) => {
+          finalUsage = hasTokenUsage(totalUsage) ? totalUsage : usage;
           finalFinishReason = finishReason;
         },
       });
@@ -537,6 +549,30 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
             return;
           }
           writeChunk({ type: 'data-usage', data: finalUsage });
+        };
+        const syncResultUsage = async () => {
+          if (!result) {
+            return;
+          }
+
+          const [totalUsageResult, finishReasonResult] = await Promise.allSettled([
+            result.totalUsage,
+            result.finishReason,
+          ]);
+
+          if (
+            totalUsageResult.status === 'fulfilled' &&
+            hasTokenUsage(totalUsageResult.value)
+          ) {
+            finalUsage = totalUsageResult.value;
+          }
+
+          if (
+            !finalFinishReason &&
+            finishReasonResult.status === 'fulfilled'
+          ) {
+            finalFinishReason = finishReasonResult.value;
+          }
         };
         const finishStream = () => {
           if (hasWrittenFinish) {
@@ -606,6 +642,8 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
               errorText ? `Streaming failed (${errorText})` : 'Streaming failed',
             );
           }
+
+          await syncResultUsage();
         } catch (error) {
           console.warn(
             '[Chat] Streaming execution failed; will fall back to generateText',
@@ -637,10 +675,28 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
         storeMessageMeta(responseMessage.id, id, traceId);
 
         try {
+          const responseParts = [...(responseMessage.parts ?? [])];
+          if (
+            finalUsage &&
+            !responseParts.some((part) => part.type === 'data-usage')
+          ) {
+            responseParts.push({
+              type: 'data-usage',
+              data: finalUsage,
+            } as ChatMessage['parts'][number]);
+          }
+          if (
+            !responseParts.some((part) => part.type === 'data-traceId')
+          ) {
+            responseParts.push({
+              type: 'data-traceId',
+              data: traceId,
+            } as ChatMessage['parts'][number]);
+          }
           const persistedResponse = {
             id: responseMessage.id,
             role: responseMessage.role,
-            parts: responseMessage.parts,
+            parts: responseParts,
             createdAt: new Date(),
             attachments: [],
             chatId: id,

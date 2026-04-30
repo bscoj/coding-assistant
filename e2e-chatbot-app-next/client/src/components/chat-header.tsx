@@ -125,7 +125,7 @@ export function ChatHeader({
           </Button>
           {totalUsageInline && (
             <div
-              className="hidden rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1 text-[11px] text-white/70 sm:block"
+              className="rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1 text-[11px] text-white/70"
               title={totalUsageLine ?? undefined}
             >
               {totalUsageInline}
