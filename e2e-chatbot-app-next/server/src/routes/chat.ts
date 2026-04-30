@@ -62,6 +62,7 @@ import {
 import { ChatSDKError } from '@chat-template/core/errors';
 import { storeMessageMeta } from '../lib/message-meta-store';
 import { drainStreamToWriter, fallbackToGenerateText } from '../lib/stream-fallback';
+import { shouldFailFastForLocalApiProxy } from '../lib/local-api-proxy';
 import { getLocalRepoConfig } from '../lib/local-repo-store';
 import {
   checkLocalChatAccess,
@@ -400,6 +401,14 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     streamCache.clearActiveStream(id);
 
     let finalUsage: LanguageModelUsage | undefined;
+    let finalFinishReason:
+      | 'stop'
+      | 'length'
+      | 'content-filter'
+      | 'tool-calls'
+      | 'error'
+      | 'other'
+      | undefined;
     let traceId: string | null = null;
     const streamId = generateUUID();
     let activeWriter:
@@ -417,6 +426,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     const memory = getLocalMemoryConfig();
     const context = getLocalContextConfig();
     const responseMode = getLocalResponseConfig();
+    const failFastForLocalApiProxy = shouldFailFastForLocalApiProxy();
     const requestHeaders = {
       [CONTEXT_HEADER_CONVERSATION_ID]: id,
       [CONTEXT_HEADER_USER_ID]: session.user.email ?? session.user.id,
@@ -436,6 +446,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     const baseModelParams = {
       model,
       messages: modelMessages,
+      ...(failFastForLocalApiProxy ? { maxRetries: 0 } : {}),
       providerOptions: {
         databricks: { includeTrace: true },
       },
@@ -482,8 +493,9 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
             }
           }
         },
-        onFinish: ({ usage }) => {
+        onFinish: ({ usage, finishReason }) => {
           finalUsage = usage;
+          finalFinishReason = finishReason;
         },
       });
     } catch (error) {
@@ -513,18 +525,34 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       generateId: generateUUID,
       execute: async ({ writer }) => {
         activeWriter = writer;
+        let hasWrittenFinish = false;
+        const writeChunk = (chunk: { type: string; [key: string]: unknown }) => {
+          if (chunk.type === 'finish') {
+            hasWrittenFinish = true;
+          }
+          writer.write(chunk);
+        };
         const writeUsageIfAvailable = () => {
           if (!finalUsage) {
             return;
           }
-          writer.write({ type: 'data-usage', data: finalUsage });
+          writeChunk({ type: 'data-usage', data: finalUsage });
+        };
+        const finishStream = () => {
+          if (hasWrittenFinish) {
+            return;
+          }
+          writeChunk({
+            type: 'finish',
+            finishReason: finalFinishReason ?? (finalUsage ? 'stop' : 'error'),
+          });
         };
 
         const runGenerateFallback = async (reason: string) => {
           console.log(`[Chat] ${reason}; falling back to generateText...`);
           const fallbackResult = await fallbackToGenerateText(
             baseModelParams,
-            writer,
+            { write: writeChunk },
           );
 
           finalUsage = fallbackResult?.usage;
@@ -541,12 +569,13 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
           if (titlePromise) {
             const generatedTitle = await resolveTitleQuickly(titlePromise);
             if (generatedTitle) {
-              writer.write({ type: 'data-title', data: generatedTitle });
+              writeChunk({ type: 'data-title', data: generatedTitle });
             }
           }
 
           writeUsageIfAvailable();
-          writer.write({ type: 'data-traceId', data: traceId });
+          writeChunk({ type: 'data-traceId', data: traceId });
+          finishStream();
           activeWriter = null;
           return;
         }
@@ -593,13 +622,14 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
         if (titlePromise) {
           const generatedTitle = await resolveTitleQuickly(titlePromise);
           if (generatedTitle) {
-            writer.write({ type: 'data-title', data: generatedTitle });
+            writeChunk({ type: 'data-title', data: generatedTitle });
           }
         }
 
         writeUsageIfAvailable();
         // Write traceId so the client knows whether feedback is supported.
-        writer.write({ type: 'data-traceId', data: traceId });
+        writeChunk({ type: 'data-traceId', data: traceId });
+        finishStream();
         activeWriter = null;
       },
       onFinish: async ({ responseMessage }) => {
@@ -1034,6 +1064,7 @@ async function generateTitleFromUserMessage({
 }) {
   const model = await myProvider.languageModel('title-model');
   const fallbackTitle = fallbackTitleFromMessage(message, maxMessageLength);
+  const failFastForLocalApiProxy = shouldFailFastForLocalApiProxy();
 
   // Truncate each text part to the maxMessageLength
   const truncatedMessage = {
@@ -1047,6 +1078,7 @@ async function generateTitleFromUserMessage({
 
   const { text: title } = await generateText({
     model,
+    ...(failFastForLocalApiProxy ? { maxRetries: 0 } : {}),
     system: `\n
     - generate a short, neutral chat title based on the user's first message
     - respond with title text only

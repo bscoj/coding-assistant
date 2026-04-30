@@ -4,6 +4,7 @@ import {
   type UIMessageStreamWriter,
 } from 'ai';
 import { generateUUID } from '@chat-template/core';
+import { formatLocalApiProxyUnavailableMessage } from './local-api-proxy';
 
 /**
  * Reads all chunks from a UI message stream, forwarding non-error parts to the
@@ -163,7 +164,7 @@ function writeGenerateTextResultToStream(
  */
 export async function fallbackToGenerateText(
   params: Parameters<typeof generateText>[0],
-  writer: UIMessageStreamWriter,
+  writer: Pick<UIMessageStreamWriter, 'write'>,
 ): Promise<{ usage: LanguageModelUsage; traceId?: string } | undefined> {
   try {
     const fallback = await generateText(params);
@@ -179,10 +180,11 @@ export async function fallbackToGenerateText(
     return { usage: fallback.usage, traceId };
   } catch (fallbackError) {
     console.error('[fallbackToGenerateText] generateText fallback also failed:', fallbackError);
-    const errorMessage =
+    const errorMessage = formatLocalApiProxyUnavailableMessage(
       fallbackError instanceof Error
         ? fallbackError.message
-        : String(fallbackError);
+        : String(fallbackError),
+    );
     writer.write({ type: 'data-error', data: errorMessage });
     return undefined;
   }

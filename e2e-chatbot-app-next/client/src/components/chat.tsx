@@ -99,7 +99,7 @@ export function Chat({
   }, []);
 
   const isNewChat = initialMessages.length === 0;
-  const didFetchHistoryOnNewChat = useRef(false);
+  const didRefreshHistoryOnNewChat = useRef(false);
   const fetchChatHistory = useCallback(() => {
     mutate(unstable_serialize(getChatHistoryPaginationKey));
   }, [mutate]);
@@ -127,12 +127,13 @@ export function Chat({
     resume: id !== undefined && initialMessages.length > 0, // Enable automatic stream resumption
     transport: new ChatTransport({
       onStreamPart: (part) => {
-        if (isNewChat && !didFetchHistoryOnNewChat.current) {
-          fetchChatHistory();
-          if (chatHistoryEnabled) {
-            setTitlePending(true);
-          }
-          didFetchHistoryOnNewChat.current = true;
+        if (
+          isNewChat &&
+          chatHistoryEnabled &&
+          !displayTitle &&
+          !titlePending
+        ) {
+          setTitlePending(true);
         }
         if (memoryStatusRef.current && !String(part.type).startsWith('data-')) {
           setMemoryStatus(undefined);
@@ -196,6 +197,9 @@ export function Chat({
         setStreamTitle(dataPart.data as string);
         setTitlePending(false);
         fetchChatHistory();
+        if (isNewChat) {
+          didRefreshHistoryOnNewChat.current = true;
+        }
       }
     },
     onFinish: ({
@@ -203,9 +207,8 @@ export function Chat({
       isDisconnect,
       isError,
       messages: finishedMessages,
-    }) => {
+      }) => {
       setMemoryStatus(undefined);
-      didFetchHistoryOnNewChat.current = false;
       setTitlePending(false);
 
       // If user aborted, don't try to resume
@@ -258,8 +261,11 @@ export function Chat({
         if (resumeAttemptCountRef.current >= maxResumeAttempts) {
           console.warn('[Chat onFinish] Max resume attempts reached');
         }
-        fetchChatHistory();
+        if (!(isNewChat && didRefreshHistoryOnNewChat.current)) {
+          fetchChatHistory();
+        }
       }
+      didRefreshHistoryOnNewChat.current = false;
     },
     onError: (error) => {
       setMemoryStatus(undefined);
