@@ -72,3 +72,15 @@ export function formatUsageLine(usage: LanguageModelUsage | undefined): string |
   }
   return `${formatTokenCount(input)} in · ${formatTokenCount(output)} out · ${formatTokenCount(total)} total`;
 }
+
+export function formatUsageInline(usage: LanguageModelUsage | undefined): string | null {
+  if (!usage) {
+    return null;
+  }
+  const input = usage.inputTokens ?? 0;
+  const output = usage.outputTokens ?? 0;
+  if (input <= 0 && output <= 0) {
+    return null;
+  }
+  return `${formatTokenCount(input)} in · ${formatTokenCount(output)} out`;
+}
