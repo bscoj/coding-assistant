@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { DbIcon } from './ui/db-icon';
 import { PencilIcon, CopyIcon, ThumbsUpIcon, ThumbsDownIcon } from './icons';
+import { formatUsageLine, getMessageUsage } from '@/lib/token-usage';
 
 function PureMessageActions({
   message,
@@ -59,6 +60,7 @@ function PureMessageActions({
     | { type: 'data-traceId'; data: string | null }
     | undefined;
   const feedbackSupported = traceIdPart === undefined || traceIdPart.data !== null;
+  const usageLine = formatUsageLine(getMessageUsage(message));
 
   const handleFeedback = useCallback(
     async (feedbackType: 'thumbs_up' | 'thumbs_down') => {
@@ -151,6 +153,11 @@ function PureMessageActions({
 
   return (
     <Actions className="-ml-0.5">
+      {usageLine && (
+        <div className="mr-1 text-[11px] text-white/42">
+          {usageLine}
+        </div>
+      )}
       {textFromParts && (
         <Action tooltip="Copy" onClick={handleCopy}>
           <CopyIcon />
@@ -189,6 +196,15 @@ export const MessageActions = memo(
       (p) => p.type === 'data-traceId',
     );
     if (prevTraceId !== nextTraceId) return false;
+    const prevUsage = getMessageUsage(prevProps.message);
+    const nextUsage = getMessageUsage(nextProps.message);
+    if (
+      prevUsage?.inputTokens !== nextUsage?.inputTokens ||
+      prevUsage?.outputTokens !== nextUsage?.outputTokens ||
+      prevUsage?.totalTokens !== nextUsage?.totalTokens
+    ) {
+      return false;
+    }
 
     return true;
   },

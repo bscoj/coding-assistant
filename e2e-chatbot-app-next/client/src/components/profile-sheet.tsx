@@ -372,7 +372,7 @@ export function ProfileSheet({
                   </div>
                   <p className="mt-1 text-xs leading-5 text-white/50">
                     Pick how aggressively the app compresses chat history.
-                    Work is the recommended default for serious coding. Raw keeps far more of the thread verbatim.
+                    Work is the recommended default for serious coding. It keeps a moderate raw window, then compacts older turns once the prompt budget gets too large. Raw keeps far more of the thread verbatim.
                   </p>
                 </div>
                 <Badge

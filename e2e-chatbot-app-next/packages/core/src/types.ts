@@ -10,6 +10,7 @@ type MessageMetadata = z.infer<typeof messageMetadataSchema>;
 export type CustomUIDataTypes = {
   error: string;
   usage: LanguageModelUsage;
+  memoryStatus: string;
   traceId: string | null;
   title: string;
 };

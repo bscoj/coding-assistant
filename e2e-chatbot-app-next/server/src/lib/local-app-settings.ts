@@ -101,7 +101,7 @@ export function getLocalMemoryConfig(): LocalMemoryConfig {
   if (mode === 'work') {
     return {
       mode,
-      recentMessages: parseInteger(env.MEMORY_WORK_RECENT_MESSAGES, 60),
+      recentMessages: parseInteger(env.MEMORY_WORK_RECENT_MESSAGES, 28),
       summaryThresholdMessages: parseInteger(env.MEMORY_WORK_SUMMARY_THRESHOLD_MESSAGES, 12),
       maxSummaryWords: parseInteger(env.MEMORY_WORK_MAX_SUMMARY_WORDS, 1000),
     };

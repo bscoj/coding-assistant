@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import uuid
 from datetime import datetime
 from time import perf_counter
 from typing import AsyncGenerator, Awaitable, Optional
@@ -35,8 +36,7 @@ from agent_server.chat_history_tools import CHAT_HISTORY_TOOLS
 from agent_server.analytics_context_tools import ANALYTICS_CONTEXT_TOOLS
 from agent_server.memory_pipeline import (
     assistant_outputs_to_items,
-    build_prompt_budget_breakdown,
-    build_optimized_messages,
+    build_optimized_messages_with_budget,
     maybe_refresh_memory,
     normalize_memory_mode,
     recent_messages_limit,
@@ -312,20 +312,7 @@ async def stream_handler(
         memory_state = store.load_memory_state(
             conversation_id, recent_messages_limit=recent_messages_limit(memory_mode)
         )
-        optimized_input = build_optimized_messages(
-            turn_items,
-            memory_state,
-            memory_mode=memory_mode,
-            user_profile_block=user_profile_block,
-            repo_instruction_blocks=repo_instruction_blocks,
-            hook_instruction_blocks=hook_instruction_blocks,
-            task_scratchpad_block=task_scratchpad_block,
-            tool_memory_block=tool_memory_block,
-            skill_blocks=skill_blocks,
-            workflow_blocks=workflow_blocks,
-            response_style_block=style_block,
-        )
-        prompt_budget = build_prompt_budget_breakdown(
+        optimized_input, prompt_budget = build_optimized_messages_with_budget(
             turn_items,
             memory_state,
             memory_mode=memory_mode,
@@ -339,20 +326,7 @@ async def stream_handler(
             response_style_block=style_block,
         )
     else:
-        optimized_input = build_optimized_messages(
-            turn_items,
-            state=None,
-            memory_mode=memory_mode,
-            user_profile_block=user_profile_block,
-            repo_instruction_blocks=repo_instruction_blocks,
-            hook_instruction_blocks=hook_instruction_blocks,
-            task_scratchpad_block=task_scratchpad_block,
-            tool_memory_block=tool_memory_block,
-            skill_blocks=skill_blocks,
-            workflow_blocks=workflow_blocks,
-            response_style_block=style_block,
-        )
-        prompt_budget = build_prompt_budget_breakdown(
+        optimized_input, prompt_budget = build_optimized_messages_with_budget(
             turn_items,
             state=None,
             memory_mode=memory_mode,
@@ -371,6 +345,20 @@ async def stream_handler(
     #   agent = await init_agent(workspace_client=get_user_workspace_client())
     set_filesystem_tool_context(optimized_input)
     try:
+        compaction = prompt_budget.get("compaction") or {}
+        if compaction.get("applied"):
+            yield ResponsesAgentStreamEvent(
+                type="response.output_item.done",
+                item={
+                    "type": "codex_status",
+                    "id": f"status_{uuid.uuid4().hex}",
+                    "status": "memory_compaction",
+                    "message": "Compressing memory...",
+                    "details": compaction,
+                },
+                output_index=0,
+                sequence_number=0,
+            )
         emit_runtime_hook_event(
             current_workspace_root,
             "BeforeAgent",
