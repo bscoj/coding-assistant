@@ -12,6 +12,7 @@ import {
 } from '@/contexts/AppConfigContext';
 
 type ProfileScope = 'global' | 'project';
+type ProfileEntrySource = 'manual' | 'learned';
 
 type ProfileEntry = {
   kind: string;
@@ -20,6 +21,7 @@ type ProfileEntry = {
   confidence: number;
   created_at: string;
   updated_at: string;
+  source?: ProfileEntrySource;
 };
 
 type ProfileDocument = {
@@ -56,6 +58,13 @@ function getKindLabel(kind: string) {
 function kindSortValue(kind: string) {
   const index = KIND_OPTIONS.findIndex((option) => option.value === kind);
   return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function getEntrySource(entry: ProfileEntry): ProfileEntrySource {
+  if (entry.source === 'learned' || entry.source === 'manual') {
+    return entry.source;
+  }
+  return entry.confidence < 1 ? 'learned' : 'manual';
 }
 
 function buildProfileMarkdown(profile: ProfileDocument, entries: ProfileEntry[]) {
@@ -123,6 +132,7 @@ export function ProfileSheet({
     setMemoryMode,
     setContextMode,
     setResponseMode,
+    refreshConfig,
   } = useAppConfig();
   const [scope, setScope] = useState<ProfileScope>('global');
   const [profile, setProfile] = useState<ProfileDocument>(EMPTY_PROFILE);
@@ -152,6 +162,7 @@ export function ProfileSheet({
     let canceled = false;
     setIsLoading(true);
     setError(null);
+    void refreshConfig();
     loadProfile(scope)
       .then((loaded) => {
         if (canceled) {
@@ -180,6 +191,20 @@ export function ProfileSheet({
   const isDirty = useMemo(() => {
     return JSON.stringify(profile.entries) !== JSON.stringify(draftEntries);
   }, [profile.entries, draftEntries]);
+
+  const entrySummary = useMemo(() => {
+    const activeEntries = draftEntries.filter((entry) => entry.status === 'active');
+    const inactiveEntries = draftEntries.filter((entry) => entry.status !== 'active');
+    const learnedEntries = activeEntries.filter((entry) => getEntrySource(entry) === 'learned');
+    const manualEntries = activeEntries.filter((entry) => getEntrySource(entry) === 'manual');
+
+    return {
+      activeCount: activeEntries.length,
+      inactiveCount: inactiveEntries.length,
+      learnedCount: learnedEntries.length,
+      manualCount: manualEntries.length,
+    };
+  }, [draftEntries]);
 
   const groupedEntries = useMemo(() => {
     const groups = draftEntries.reduce<
@@ -223,6 +248,19 @@ export function ProfileSheet({
     setDraftEntries((current) => current.filter((_, entryIndex) => entryIndex !== index));
   }
 
+  function toggleEntryStatus(index: number) {
+    setDraftEntries((current) =>
+      current.map((entry, entryIndex) =>
+        entryIndex === index
+          ? {
+              ...entry,
+              status: entry.status === 'active' ? 'inactive' : 'active',
+            }
+          : entry,
+      ),
+    );
+  }
+
   function addEntry() {
     const trimmed = newContent.trim();
     if (!trimmed) {
@@ -237,6 +275,7 @@ export function ProfileSheet({
         confidence: 1,
         created_at: now,
         updated_at: now,
+        source: 'manual',
       },
       ...current,
     ]);
@@ -250,6 +289,7 @@ export function ProfileSheet({
       const saved = await saveProfile(scope, draftEntries);
       setProfile(saved);
       setDraftEntries(saved.entries);
+      await refreshConfig();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -285,7 +325,7 @@ export function ProfileSheet({
                   Profile memory
                 </SheetTitle>
                 <p className="text-sm text-white/55">
-                  Edit the durable facts and preferences the agent should keep.
+                  Learned and manually added preferences show up here. Hide or delete anything you do not want reused in future chats.
                 </p>
               </div>
               <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.03] p-1">
@@ -557,6 +597,32 @@ export function ProfileSheet({
                   <p className="text-xs leading-5 text-white/45">
                     Keep this list tight. Use it for stable preferences and facts, not one-off task details.
                   </p>
+                  <div className="grid gap-2 pt-1 sm:grid-cols-4">
+                    <div className="rounded-xl border border-white/[0.06] bg-[#0f141b] px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-white/35">Active</div>
+                      <div className="mt-1 text-sm font-medium text-white/85">
+                        {entrySummary.activeCount}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-white/[0.06] bg-[#0f141b] px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-white/35">Learned</div>
+                      <div className="mt-1 text-sm font-medium text-emerald-100">
+                        {entrySummary.learnedCount}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-white/[0.06] bg-[#0f141b] px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-white/35">Manual</div>
+                      <div className="mt-1 text-sm font-medium text-white/85">
+                        {entrySummary.manualCount}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-white/[0.06] bg-[#0f141b] px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-white/35">Hidden</div>
+                      <div className="mt-1 text-sm font-medium text-white/60">
+                        {entrySummary.inactiveCount}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -578,7 +644,9 @@ export function ProfileSheet({
                           <div>
                             <div className="text-sm font-medium text-white/92">{group.label}</div>
                             <div className="text-xs text-white/45">
-                              {group.items.length} {group.items.length === 1 ? 'entry' : 'entries'}
+                              {group.items.filter(({ entry }) => entry.status === 'active').length} active
+                              {' · '}
+                              {group.items.filter(({ entry }) => entry.status !== 'active').length} hidden
                             </div>
                           </div>
                           <Badge variant="secondary" className="rounded-full bg-white/[0.06] text-white/72">
@@ -589,22 +657,51 @@ export function ProfileSheet({
                           {group.items.map(({ entry, index }) => (
                             <div
                               key={`${group.kind}-${index}`}
-                              className="space-y-3 rounded-xl border border-white/[0.06] bg-[#0f141b] p-3"
+                              className={`space-y-3 rounded-xl border p-3 ${
+                                entry.status === 'active'
+                                  ? 'border-white/[0.06] bg-[#0f141b]'
+                                  : 'border-white/[0.05] bg-[#0d1117] opacity-75'
+                              }`}
                             >
                               <div className="flex items-center justify-between gap-3">
-                                <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-white/38">
-                                  <span>{entry.status}</span>
+                                <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-white/38">
+                                  <span
+                                    className={`rounded-full px-2 py-1 tracking-[0.16em] ${
+                                      getEntrySource(entry) === 'learned'
+                                        ? 'bg-emerald-300/[0.08] text-emerald-100'
+                                        : 'bg-white/[0.06] text-white/70'
+                                    }`}
+                                  >
+                                    {getEntrySource(entry)}
+                                  </span>
+                                  <span className="rounded-full bg-white/[0.04] px-2 py-1">
+                                    {entry.status}
+                                  </span>
                                   <span className="text-white/18">•</span>
                                   <span>{Math.round(entry.confidence * 100)}%</span>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => removeEntry(index)}
-                                  className="text-xs text-white/45 hover:text-white"
-                                >
-                                  Remove
-                                </button>
+                                <div className="flex items-center gap-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleEntryStatus(index)}
+                                    className="text-xs text-white/45 hover:text-white"
+                                  >
+                                    {entry.status === 'active' ? 'Hide' : 'Restore'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeEntry(index)}
+                                    className="text-xs text-red-200/70 hover:text-red-100"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
                               </div>
+                              <p className="text-xs leading-5 text-white/48">
+                                {getEntrySource(entry) === 'learned'
+                                  ? 'Learned from prior chats and reused as durable profile context until you hide or delete it.'
+                                  : 'Added manually from the profile sheet and reused as durable profile context.'}
+                              </p>
                               <Textarea
                                 value={entry.content}
                                 onChange={(event) =>

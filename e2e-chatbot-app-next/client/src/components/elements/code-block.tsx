@@ -1,14 +1,15 @@
 import { cn } from '@/lib/utils';
-import { CheckIcon, CopyIcon } from '../icons';
+import { useCopyToClipboard } from 'usehooks-ts';
 import {
   Fragment,
-  useCallback,
   useEffect,
   useMemo,
   useState,
   type HTMLAttributes,
   type ReactNode,
 } from 'react';
+import { toast } from 'sonner';
+import { CheckIcon, CopyIcon } from '@/components/icons';
 
 type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
   code: string;
@@ -78,17 +79,6 @@ const LANGUAGE_ALIASES: Record<string, string> = {
 function normalizeLanguage(language: string): string {
   const lowered = language.trim().toLowerCase();
   return LANGUAGE_ALIASES[lowered] ?? (lowered || 'text');
-}
-
-function languageLabel(language: string): string {
-  const normalized = normalizeLanguage(language);
-  if (normalized === 'text' || normalized === 'plain' || normalized === 'plaintext') {
-    return 'text';
-  }
-  if (normalized === 'markup') {
-    return 'html';
-  }
-  return normalized;
 }
 
 async function loadPrismCore(): Promise<PrismApi> {
@@ -195,47 +185,25 @@ const renderFallbackCodeSurface = ({
   children,
   props,
   showLineNumbers,
-  language,
-  onCopy,
-  copied,
+  actions,
 }: {
   code: string;
   className?: string;
   children?: ReactNode;
   props?: HTMLAttributes<HTMLDivElement>;
   showLineNumbers?: boolean;
-  language: string;
-  onCopy: () => void;
-  copied: boolean;
+  actions?: ReactNode;
 }) => {
   const lines = code.split('\n');
 
   return (
     <div
       className={cn(
-        'code-block-surface relative w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-[#101214] text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]',
+        'code-block-surface group/code-block relative w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-[#101214] text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]',
         className,
       )}
       {...(props ?? {})}
     >
-      <div className="flex items-center justify-between border-b border-white/[0.08] bg-white/[0.03] px-[1.15rem] py-2">
-        <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/42">
-          {languageLabel(language)}
-        </div>
-        <div className="flex items-center gap-2">
-          {children}
-          <button
-            type="button"
-            onClick={onCopy}
-            className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
-            aria-label={copied ? 'Copied code' : 'Copy code'}
-            title={copied ? 'Copied' : 'Copy code'}
-          >
-            {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
-            <span>{copied ? 'Copied' : 'Copy'}</span>
-          </button>
-        </div>
-      </div>
       <div className="relative overflow-x-auto px-[1.15rem] py-[1.05rem]">
         {showLineNumbers ? (
           <div className="grid min-w-fit grid-cols-[auto_1fr] gap-x-4 font-mono text-[0.88rem] leading-[1.72] text-[#f3f5f7]">
@@ -253,6 +221,12 @@ const renderFallbackCodeSurface = ({
             <code>{code}</code>
           </pre>
         )}
+        {actions || children ? (
+          <div className="absolute top-2 right-2 flex items-center gap-2">
+            {actions}
+            {children}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -268,16 +242,22 @@ export const CodeBlock = ({
 }: CodeBlockProps) => {
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [_, copyToClipboard] = useCopyToClipboard();
   const normalizedLanguage = useMemo(() => normalizeLanguage(language), [language]);
 
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopied(true);
-    } catch {
-      setCopied(false);
+  useEffect(() => {
+    if (!copied) {
+      return;
     }
-  }, [code]);
+
+    const timeout = window.setTimeout(() => {
+      setCopied(false);
+    }, 1600);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [copied]);
 
   useEffect(() => {
     let cancelled = false;
@@ -310,15 +290,33 @@ export const CodeBlock = ({
     };
   }, [code, normalizedLanguage]);
 
-  useEffect(() => {
-    if (!copied) {
-      return;
+  const handleCopy = async () => {
+    try {
+      await copyToClipboard(code);
+      setCopied(true);
+    } catch {
+      toast.error('Failed to copy code.');
     }
-    const timeout = window.setTimeout(() => {
-      setCopied(false);
-    }, 1600);
-    return () => window.clearTimeout(timeout);
-  }, [copied]);
+  };
+
+  const copyAction = (
+    <button
+      type="button"
+      onClick={() => {
+        void handleCopy();
+      }}
+      className={cn(
+        'inline-flex size-7 items-center justify-center rounded-lg border backdrop-blur-sm transition',
+        copied
+          ? 'border-emerald-300/22 bg-emerald-300/[0.08] text-emerald-100'
+          : 'border-white/[0.06] bg-black/20 text-white/42 hover:border-white/[0.12] hover:bg-black/32 hover:text-white/78',
+      )}
+      aria-label={copied ? 'Code copied' : 'Copy code'}
+      title={copied ? 'Copied' : 'Copy code'}
+    >
+      {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
+    </button>
+  );
 
   if (!highlightedHtml || showLineNumbers) {
     return renderFallbackCodeSurface({
@@ -327,38 +325,18 @@ export const CodeBlock = ({
       children,
       props,
       showLineNumbers,
-      language: normalizedLanguage,
-      onCopy: handleCopy,
-      copied,
+      actions: copyAction,
     });
   }
 
   return (
     <div
       className={cn(
-        'code-block-surface relative w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-[#101214] text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]',
+        'code-block-surface group/code-block relative w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-[#101214] text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]',
         className,
       )}
       {...props}
     >
-      <div className="flex items-center justify-between border-b border-white/[0.08] bg-white/[0.03] px-[1.15rem] py-2">
-        <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/42">
-          {languageLabel(normalizedLanguage)}
-        </div>
-        <div className="flex items-center gap-2">
-          {children}
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
-            aria-label={copied ? 'Copied code' : 'Copy code'}
-            title={copied ? 'Copied' : 'Copy code'}
-          >
-            {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
-            <span>{copied ? 'Copied' : 'Copy'}</span>
-          </button>
-        </div>
-      </div>
       <div className="relative overflow-x-auto px-[1.15rem] py-[1.05rem]">
         <pre className="m-0 whitespace-pre font-mono text-[0.88rem] leading-[1.72] text-[#f3f5f7]">
           <code
@@ -366,6 +344,12 @@ export const CodeBlock = ({
             dangerouslySetInnerHTML={{ __html: highlightedHtml }}
           />
         </pre>
+        {copyAction || children ? (
+          <div className="absolute top-2 right-2 flex items-center gap-2">
+            {copyAction}
+            {children}
+          </div>
+        ) : null}
       </div>
     </div>
   );

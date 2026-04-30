@@ -22,6 +22,15 @@ interface StorageConfig {
   localChatHistoryPath: string;
 }
 
+interface ProfileSummary {
+  activeCount: number;
+  inactiveCount: number;
+  learnedCount: number;
+  manualCount: number;
+  totalCount: number;
+  updatedAt: string | null;
+}
+
 export type MemoryMode = 'lean' | 'work' | 'raw';
 export type ContextMode = 'personalized' | 'fresh';
 export type ResponseMode = 'direct' | 'teach';
@@ -51,6 +60,10 @@ interface ConfigResponse {
   memory: MemoryConfig;
   context: ContextConfig;
   response: ResponseConfig;
+  profiles: {
+    global: ProfileSummary;
+    project: ProfileSummary | null;
+  };
   storage: StorageConfig;
   obo?: {
     missingScopes: string[];
@@ -70,11 +83,18 @@ interface AppConfigContextType {
   memory: MemoryConfig | undefined;
   context: ContextConfig | undefined;
   response: ResponseConfig | undefined;
+  profiles:
+    | {
+        global: ProfileSummary;
+        project: ProfileSummary | null;
+      }
+    | undefined;
   storage: StorageConfig | undefined;
   setRepoPath: (path: string | null) => Promise<void>;
   setMemoryMode: (mode: MemoryMode) => Promise<void>;
   setContextMode: (mode: ContextMode) => Promise<void>;
   setResponseMode: (mode: ResponseMode) => Promise<void>;
+  refreshConfig: () => Promise<void>;
 }
 
 const AppConfigContext = createContext<AppConfigContextType | undefined>(
@@ -177,6 +197,10 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  async function refreshConfig() {
+    await mutate();
+  }
+
   const value: AppConfigContextType = {
     config: data,
     isLoading,
@@ -191,11 +215,13 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     memory: data?.memory,
     context: data?.context,
     response: data?.response,
+    profiles: data?.profiles,
     storage: data?.storage,
     setRepoPath,
     setMemoryMode,
     setContextMode,
     setResponseMode,
+    refreshConfig,
   };
 
   return (

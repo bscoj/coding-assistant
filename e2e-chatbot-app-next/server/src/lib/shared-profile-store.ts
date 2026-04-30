@@ -1,17 +1,15 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readEnvFile, resolveAgentRoot } from './local-agent-config';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DEFAULT_AGENT_ROOT = path.resolve(__dirname, '../../../../');
 const PROFILE_KINDS = new Set([
   'coding_preference',
   'workstyle_preference',
   'user_fact',
   'constraint',
 ]);
+const PROFILE_SOURCES = new Set(['manual', 'learned']);
 
 export type SharedProfileEntry = {
   kind: string;
@@ -20,6 +18,7 @@ export type SharedProfileEntry = {
   confidence: number;
   created_at: string;
   updated_at: string;
+  source: 'manual' | 'learned';
 };
 
 export type SharedProfileDocument = {
@@ -32,16 +31,29 @@ export type SharedProfileDocument = {
   entries: SharedProfileEntry[];
 };
 
+export type SharedProfileSummary = {
+  activeCount: number;
+  inactiveCount: number;
+  learnedCount: number;
+  manualCount: number;
+  totalCount: number;
+  updatedAt: string | null;
+};
+
 function nowIso() {
   return new Date().toISOString();
 }
 
-function resolveAgentRoot() {
-  return path.resolve(process.env.LOCAL_AGENT_REPO_ROOT || DEFAULT_AGENT_ROOT);
+function profileEnvValues() {
+  const agentRoot = resolveAgentRoot();
+  return {
+    ...readEnvFile(path.join(agentRoot, '.env.example')),
+    ...readEnvFile(path.join(agentRoot, '.env')),
+  };
 }
 
 function resolveGlobalProfilePath() {
-  const configured = process.env.USER_PROFILE_PATH;
+  const configured = process.env.USER_PROFILE_PATH || profileEnvValues().USER_PROFILE_PATH;
   if (configured) {
     return path.isAbsolute(configured)
       ? configured
@@ -51,7 +63,8 @@ function resolveGlobalProfilePath() {
 }
 
 function resolveProjectProfileDir() {
-  const configured = process.env.PROJECT_PROFILE_DIR;
+  const configured =
+    process.env.PROJECT_PROFILE_DIR || profileEnvValues().PROJECT_PROFILE_DIR;
   if (configured) {
     return path.isAbsolute(configured)
       ? configured
@@ -105,13 +118,22 @@ function normalizeEntry(raw: Partial<SharedProfileEntry>, timestamp: string): Sh
   if (!PROFILE_KINDS.has(kind) || !content) {
     return null;
   }
+  const confidence = Number(raw.confidence ?? 1);
+  const normalizedConfidence = Number.isFinite(confidence) ? confidence : 1;
+  const source =
+    typeof raw.source === 'string' && PROFILE_SOURCES.has(raw.source)
+      ? raw.source
+      : normalizedConfidence < 1
+        ? 'learned'
+        : 'manual';
   return {
     kind,
     content,
     status,
-    confidence: Number(raw.confidence ?? 1),
+    confidence: normalizedConfidence,
     created_at: raw.created_at || timestamp,
     updated_at: timestamp,
+    source,
   };
 }
 
@@ -158,8 +180,31 @@ function writeDocument(document: SharedProfileDocument) {
   fs.writeFileSync(document.path, `${JSON.stringify(document, null, 2)}\n`);
 }
 
+function summarizeDocument(document: SharedProfileDocument): SharedProfileSummary {
+  const activeEntries = document.entries.filter(entry => entry.status === 'active');
+  const inactiveEntries = document.entries.filter(entry => entry.status !== 'active');
+  const learnedEntries = activeEntries.filter(entry => entry.source === 'learned');
+  const manualEntries = activeEntries.filter(entry => entry.source !== 'learned');
+
+  return {
+    activeCount: activeEntries.length,
+    inactiveCount: inactiveEntries.length,
+    learnedCount: learnedEntries.length,
+    manualCount: manualEntries.length,
+    totalCount: document.entries.length,
+    updatedAt: document.updated_at,
+  };
+}
+
 export function getSharedProfile(scope: 'global' | 'project', workspaceRoot: string | null): SharedProfileDocument {
   return readDocument(scope, workspaceRoot);
+}
+
+export function getSharedProfileSummary(
+  scope: 'global' | 'project',
+  workspaceRoot: string | null,
+): SharedProfileSummary {
+  return summarizeDocument(readDocument(scope, workspaceRoot));
 }
 
 export function saveSharedProfile(
@@ -169,12 +214,11 @@ export function saveSharedProfile(
 ) {
   const timestamp = nowIso();
   const document = readDocument(scope, workspaceRoot);
-  const activeEntries = entries
+  const normalizedEntries = entries
     .map(entry => normalizeEntry(entry, timestamp))
-    .filter((entry): entry is SharedProfileEntry => entry !== null && entry.status === 'active');
-  const inactiveEntries = entries
-    .map(entry => normalizeEntry(entry, timestamp))
-    .filter((entry): entry is SharedProfileEntry => entry !== null && entry.status !== 'active');
+    .filter((entry): entry is SharedProfileEntry => entry !== null);
+  const activeEntries = normalizedEntries.filter(entry => entry.status === 'active');
+  const inactiveEntries = normalizedEntries.filter(entry => entry.status !== 'active');
   document.entries = [...activeEntries, ...inactiveEntries];
   writeDocument(document);
   return document;

@@ -76,7 +76,14 @@ export function ChatHeader({
   latestTokenUsage?: LanguageModelUsage,
 }) {
   const navigate = useNavigate();
-  const { chatHistoryEnabled, feedbackEnabled, oboMissingScopes, repo, models } = useConfig();
+  const {
+    chatHistoryEnabled,
+    feedbackEnabled,
+    oboMissingScopes,
+    repo,
+    models,
+    profiles,
+  } = useConfig();
   const [repoPickerOpen, setRepoPickerOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -86,6 +93,10 @@ export function ChatHeader({
   );
   const latestUsageLine = formatUsageLine(latestTokenUsage);
   const totalUsageLine = formatUsageLine(totalTokenUsage);
+  const totalStoredPreferences =
+    (profiles?.global.activeCount ?? 0) + (profiles?.project?.activeCount ?? 0);
+  const totalLearnedPreferences =
+    (profiles?.global.learnedCount ?? 0) + (profiles?.project?.learnedCount ?? 0);
 
   return (
     <>
@@ -145,6 +156,19 @@ export function ChatHeader({
           >
             <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5 text-white/72" />
             Profile
+            {totalStoredPreferences > 0 ? (
+              <span
+                className={cn(
+                  'ml-1 rounded-full px-1.5 py-0.5 text-[10px] leading-none',
+                  totalLearnedPreferences > 0
+                    ? 'bg-emerald-300/14 text-emerald-100'
+                    : 'bg-white/[0.08] text-white/72',
+                )}
+                title={`${totalStoredPreferences} stored preferences`}
+              >
+                {totalStoredPreferences}
+              </span>
+            ) : null}
           </Button>
           {!chatHistoryEnabled && (
             <TooltipProvider>

@@ -33,6 +33,7 @@ class UserProfileEntry:
     confidence: float
     created_at: str
     updated_at: str
+    source: str = "manual"
 
 
 def _utc_now() -> str:
@@ -236,14 +237,23 @@ class UserProfileStore:
             status = str(raw.get("status", "active")).strip() or "active"
             if not kind or not content or kind not in PROFILE_KINDS:
                 continue
+            confidence = float(raw.get("confidence", 0.0))
+            source = str(
+                raw.get(
+                    "source",
+                    "learned" if confidence < 1 else "manual",
+                )
+                or "manual"
+            )
             entries.append(
                 UserProfileEntry(
                     kind=kind,
                     content=content,
                     status=status,
-                    confidence=float(raw.get("confidence", 0.0)),
+                    confidence=confidence,
                     created_at=str(raw.get("created_at", document["updated_at"])),
                     updated_at=str(raw.get("updated_at", document["updated_at"])),
+                    source=source,
                 )
             )
         return entries
@@ -265,6 +275,7 @@ class UserProfileStore:
                     "confidence": entry.confidence,
                     "created_at": entry.created_at,
                     "updated_at": entry.updated_at,
+                    "source": entry.source,
                 }
                 for entry in self.load_entries()
             ],
@@ -289,6 +300,7 @@ class UserProfileStore:
                     "confidence": float(raw.get("confidence", 1.0)),
                     "created_at": str(raw.get("created_at", now)),
                     "updated_at": now,
+                    "source": str(raw.get("source", "manual") or "manual"),
                 }
             )
 
@@ -408,6 +420,7 @@ class UserProfileStore:
                     "confidence": confidence,
                     "created_at": now,
                     "updated_at": now,
+                    "source": "learned",
                 }
             )
 

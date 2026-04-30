@@ -33,6 +33,7 @@ import {
 } from '../lib/local-chat-store';
 import {
   getSharedProfile,
+  getSharedProfileSummary,
   saveSharedProfile,
 } from '../lib/shared-profile-store';
 
@@ -69,6 +70,10 @@ configRouter.get('/', async (req: Request, res: Response) => {
   const memory = getLocalMemoryConfig();
   const context = getLocalContextConfig();
   const responseMode = getLocalResponseConfig();
+  const globalProfileSummary = getSharedProfileSummary('global', null);
+  const projectProfileSummary = repo.path
+    ? getSharedProfileSummary('project', repo.path)
+    : null;
 
   let missingScopes = oboInfo.endpointRequiredScopes;
 
@@ -94,6 +99,10 @@ configRouter.get('/', async (req: Request, res: Response) => {
     memory,
     context,
     response: responseMode,
+    profiles: {
+      global: globalProfileSummary,
+      project: projectProfileSummary,
+    },
     storage: {
       agentRoot: storage.agentRoot,
       conversationMemoryDbPath: storage.conversationMemoryDbPath,
