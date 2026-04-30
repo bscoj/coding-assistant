@@ -28,6 +28,7 @@ import { useAppConfig } from '@/contexts/AppConfigContext';
 import { Greeting } from './greeting';
 import { ToolActivityRail } from './tool-activity-rail';
 import { useLocalStorage } from 'usehooks-ts';
+import { getMessageUsage, sumMessageUsageTotals } from '@/lib/token-usage';
 
 export function Chat({
   id,
@@ -66,6 +67,9 @@ export function Chat({
   const [_usage, setUsage] = useState<LanguageModelUsage | undefined>(
     initialLastContext,
   );
+  const [memoryStatus, setMemoryStatus] = useState<string | undefined>();
+  const memoryStatusRef = useRef<string | undefined>(memoryStatus);
+  memoryStatusRef.current = memoryStatus;
 
   const [lastPart, setLastPart] = useState<UIMessageChunk | undefined>();
   const lastPartRef = useRef<UIMessageChunk | undefined>(lastPart);
@@ -130,6 +134,9 @@ export function Chat({
           }
           didFetchHistoryOnNewChat.current = true;
         }
+        if (memoryStatusRef.current && !String(part.type).startsWith('data-')) {
+          setMemoryStatus(undefined);
+        }
         // Reset resume attempts when we successfully receive stream parts
         resumeAttemptCountRef.current = 0;
         setLastPart(part);
@@ -182,6 +189,9 @@ export function Chat({
       if (dataPart.type === 'data-usage') {
         setUsage(dataPart.data as LanguageModelUsage);
       }
+      if (dataPart.type === 'data-memoryStatus') {
+        setMemoryStatus(dataPart.data as string);
+      }
       if (dataPart.type === 'data-title') {
         setStreamTitle(dataPart.data as string);
         setTitlePending(false);
@@ -194,6 +204,7 @@ export function Chat({
       isError,
       messages: finishedMessages,
     }) => {
+      setMemoryStatus(undefined);
       didFetchHistoryOnNewChat.current = false;
       setTitlePending(false);
 
@@ -251,6 +262,7 @@ export function Chat({
       }
     },
     onError: (error) => {
+      setMemoryStatus(undefined);
       console.log('[Chat onError] Error occurred:', error);
 
       // Only show toast for explicit ChatSDKError (backend validation errors)
@@ -290,6 +302,20 @@ export function Chat({
 
   const [attachments, setAttachments] = useState<Array<Attachment>>([]);
 
+  const totalTokenUsage = useMemo(
+    () => sumMessageUsageTotals(messages),
+    [messages],
+  );
+  const latestAssistantUsage = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const usage = getMessageUsage(messages[index]);
+      if (usage) {
+        return usage;
+      }
+    }
+    return _usage;
+  }, [_usage, messages]);
+
   const inputElement = <MultimodalInput
     chatId={id}
     input={input}
@@ -311,6 +337,8 @@ export function Chat({
           empty
           selectedModel={selectedChatModel}
           onSelectModel={setSelectedChatModel}
+          totalTokenUsage={totalTokenUsage}
+          latestTokenUsage={latestAssistantUsage}
         />
         <div className="flex min-h-0 flex-1 overflow-y-auto overscroll-contain touch-pan-y p-4">
           <div className="m-auto flex w-full max-w-4xl flex-col">
@@ -331,7 +359,18 @@ export function Chat({
             isLoadingTitle={titlePending && !displayTitle}
             selectedModel={selectedChatModel}
             onSelectModel={setSelectedChatModel}
+            totalTokenUsage={totalTokenUsage}
+            latestTokenUsage={latestAssistantUsage}
           />
+
+          {memoryStatus && (
+            <div className="px-4 pt-2">
+              <div className="mx-auto flex w-full max-w-4xl items-center gap-2 rounded-full border border-emerald-300/15 bg-emerald-300/[0.06] px-3 py-1.5 text-xs text-emerald-100/82">
+                <div className="h-2 w-2 rounded-full bg-emerald-300/80 animate-pulse" />
+                <span>{memoryStatus}</span>
+              </div>
+            </div>
+          )}
 
           <Messages
             chatId={id}

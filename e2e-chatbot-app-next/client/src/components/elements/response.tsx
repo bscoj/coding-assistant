@@ -203,12 +203,7 @@ function renderBlockToken(token: Token, key: string): ReactNode {
       );
     case 'html':
       return (
-        <pre
-          key={key}
-          className="overflow-x-auto rounded-2xl border border-white/[0.08] bg-[#101214] px-5 py-4 font-mono text-sm text-white/78"
-        >
-          <code>{token.raw}</code>
-        </pre>
+        <CodeBlock key={key} code={token.raw} language="html" />
       );
     default:
       return (

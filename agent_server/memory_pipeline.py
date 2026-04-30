@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_THRESHOLD_MESSAGES = 10
 DEFAULT_RECENT_MESSAGES = 12
 DEFAULT_WORK_THRESHOLD_MESSAGES = 12
-DEFAULT_WORK_RECENT_MESSAGES = 60
+DEFAULT_WORK_RECENT_MESSAGES = 28
 DEFAULT_RAW_THRESHOLD_MESSAGES = 20
 DEFAULT_RAW_RECENT_MESSAGES = 140
 DEFAULT_MIN_FACT_CONFIDENCE = 0.65
@@ -35,6 +35,15 @@ DEFAULT_RAW_MAX_SUMMARY_WORDS = 1600
 DEFAULT_MEMORY_MODE = "work"
 DEFAULT_TOOL_SUMMARY_MAX_CHARS = 1200
 DEFAULT_WORKING_SET_FALLBACK_MESSAGES = 24
+DEFAULT_PROMPT_SOFT_TOKEN_LIMIT = 50000
+DEFAULT_PROMPT_HARD_TOKEN_LIMIT = 70000
+DEFAULT_PROMPT_TARGET_TOKEN_LIMIT = 36000
+DEFAULT_COMPACT_RECENT_MESSAGES = 12
+DEFAULT_WORK_COMPACT_RECENT_MESSAGES = 14
+DEFAULT_RAW_COMPACT_RECENT_MESSAGES = 22
+DEFAULT_MIN_COMPACT_RECENT_MESSAGES = 8
+DEFAULT_COMPACT_RECENT_CONTEXT_CHARS = 2200
+DEFAULT_COMPACT_TOOL_MEMORY_CHARS = 1200
 
 CODE_FENCE_PATTERN = re.compile(r"```(?P<lang>[A-Za-z0-9_+-]*)\n(?P<code>.*?)(?:```|$)", re.S)
 PATH_PATTERN = re.compile(
@@ -152,6 +161,54 @@ def working_set_fallback_messages(mode: str | None = None) -> int:
             "MEMORY_WORKING_SET_FALLBACK_MESSAGES",
             DEFAULT_WORKING_SET_FALLBACK_MESSAGES,
         ),
+    )
+
+
+def prompt_soft_token_limit() -> int:
+    return _env_int("MEMORY_PROMPT_SOFT_TOKEN_LIMIT", DEFAULT_PROMPT_SOFT_TOKEN_LIMIT)
+
+
+def prompt_hard_token_limit() -> int:
+    return _env_int("MEMORY_PROMPT_HARD_TOKEN_LIMIT", DEFAULT_PROMPT_HARD_TOKEN_LIMIT)
+
+
+def prompt_target_token_limit() -> int:
+    return _env_int("MEMORY_PROMPT_TARGET_TOKEN_LIMIT", DEFAULT_PROMPT_TARGET_TOKEN_LIMIT)
+
+
+def compact_recent_messages_limit(mode: str | None = None) -> int:
+    normalized = normalize_memory_mode(mode)
+    if normalized == "work":
+        return _env_int(
+            "MEMORY_WORK_COMPACT_RECENT_MESSAGES",
+            DEFAULT_WORK_COMPACT_RECENT_MESSAGES,
+        )
+    if normalized == "raw":
+        return _env_int(
+            "MEMORY_RAW_COMPACT_RECENT_MESSAGES",
+            DEFAULT_RAW_COMPACT_RECENT_MESSAGES,
+        )
+    return _env_int("MEMORY_COMPACT_RECENT_MESSAGES", DEFAULT_COMPACT_RECENT_MESSAGES)
+
+
+def min_compact_recent_messages() -> int:
+    return _env_int(
+        "MEMORY_MIN_COMPACT_RECENT_MESSAGES",
+        DEFAULT_MIN_COMPACT_RECENT_MESSAGES,
+    )
+
+
+def compact_recent_context_chars() -> int:
+    return _env_int(
+        "MEMORY_COMPACT_RECENT_CONTEXT_CHARS",
+        DEFAULT_COMPACT_RECENT_CONTEXT_CHARS,
+    )
+
+
+def compact_tool_memory_chars() -> int:
+    return _env_int(
+        "MEMORY_COMPACT_TOOL_MEMORY_CHARS",
+        DEFAULT_COMPACT_TOOL_MEMORY_CHARS,
     )
 
 
@@ -587,6 +644,129 @@ def _render_pinned_turns(state: MemoryState) -> str | None:
     return "Pinned high-value turns:\n" + "\n".join(lines)
 
 
+def _recent_items_from_stored_messages(messages: list[StoredMessage]) -> list[dict[str, Any]]:
+    recent_items: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.role == "system":
+            continue
+        safe_item = model_safe_item(json.loads(msg.content_json))
+        if safe_item is not None:
+            recent_items.append(safe_item)
+    return recent_items
+
+
+def _recent_text_excerpts(
+    messages: list[StoredMessage],
+    *,
+    role: str,
+    limit: int,
+    max_chars: int,
+) -> list[str]:
+    excerpts: list[str] = []
+    for message in messages:
+        if message.role != role:
+            continue
+        item = json.loads(message.content_json)
+        if role == "assistant":
+            text = _extract_assistant_text(item) or ""
+        else:
+            text = item_text(item).strip()
+        excerpt = _compact_excerpt(text, max_chars)
+        if excerpt:
+            excerpts.append(excerpt)
+    return _dedupe_compact_list(excerpts[-limit:], limit)
+
+
+def _render_compacted_recent_context(
+    messages: list[StoredMessage],
+    repo: str | None,
+    *,
+    aggressive: bool,
+) -> str | None:
+    if not messages:
+        return None
+
+    conversation_id = messages[-1].conversation_id
+    journal, pins = _derive_structured_memory_signals(messages, conversation_id, repo)
+    char_limit = compact_recent_context_chars()
+    if aggressive:
+        char_limit = max(900, math.floor(char_limit * 0.7))
+
+    sections: list[str] = []
+    if journal.objective:
+        sections.append(f"Objective carried from compacted recent turns: {journal.objective}")
+    if journal.status and journal.status != "planning":
+        sections.append(f"Recent working status: {journal.status}")
+    if journal.files_inspected:
+        sections.append("Files or tables referenced:\n" + "\n".join(f"- {value}" for value in journal.files_inspected[:6]))
+    if journal.files_changed:
+        sections.append("Files changed or requested:\n" + "\n".join(f"- {value}" for value in journal.files_changed[:5]))
+    if journal.generated_code_artifacts:
+        sections.append(
+            "Generated code or queries to preserve:\n"
+            + "\n".join(f"- {value}" for value in journal.generated_code_artifacts[:5])
+        )
+    if journal.known_errors:
+        sections.append("Errors and failures seen:\n" + "\n".join(f"- {value}" for value in journal.known_errors[:5]))
+
+    recent_user_asks = _recent_text_excerpts(
+        messages,
+        role="user",
+        limit=2 if aggressive else 3,
+        max_chars=180 if aggressive else 220,
+    )
+    if recent_user_asks:
+        sections.append("Recent user asks:\n" + "\n".join(f"- {value}" for value in recent_user_asks))
+
+    recent_assistant_outputs = _recent_text_excerpts(
+        messages,
+        role="assistant",
+        limit=2 if aggressive else 3,
+        max_chars=180 if aggressive else 220,
+    )
+    if recent_assistant_outputs:
+        sections.append(
+            "Recent assistant outputs:\n"
+            + "\n".join(f"- {value}" for value in recent_assistant_outputs)
+        )
+
+    code_pins = [pin for pin in pins if pin.kind == "code"][: 2 if aggressive else 3]
+    if code_pins:
+        rendered = []
+        for pin in code_pins:
+            detail = pin.summary.strip()
+            excerpt = _compact_excerpt(pin.content_excerpt or "", 150 if aggressive else 210)
+            if excerpt:
+                rendered.append(f"- {detail}: {excerpt}")
+            else:
+                rendered.append(f"- {detail}")
+        sections.append("Pinned code details from compacted turns:\n" + "\n".join(rendered))
+
+    if not sections:
+        return None
+
+    block = (
+        "Compacted recent working context\n\n"
+        + "\n\n".join(sections)
+        + "\n\nUse this only as a compressed bridge for older recent turns; prefer the remaining raw recent messages if there is any conflict."
+    )
+    if len(block) <= char_limit:
+        return block
+    return block[:char_limit].rstrip() + " ..."
+
+
+def _compact_tool_memory_block(tool_memory_block: str | None) -> str | None:
+    if not tool_memory_block:
+        return None
+    limit = compact_tool_memory_chars()
+    if len(tool_memory_block) <= limit:
+        return tool_memory_block
+    return (
+        tool_memory_block[:limit].rstrip()
+        + "\n... [tool working set compacted for prompt budget]"
+    )
+
+
 def build_memory_block(state: MemoryState, mode: str | None = None) -> str | None:
     sections: list[str] = []
     journal_block = _render_task_journal(state.task_journal)
@@ -615,13 +795,7 @@ def _optimized_message_parts(
     current_items = [normalize_item(item) for item in request_input]
     system_items = [item for item in current_items if item.get("role") == "system"]
     if state is not None:
-        recent_items = []
-        for msg in state.recent_messages:
-            if msg.role == "system":
-                continue
-            safe_item = model_safe_item(json.loads(msg.content_json))
-            if safe_item is not None:
-                recent_items.append(safe_item)
+        recent_items = _recent_items_from_stored_messages(state.recent_messages)
     else:
         recent_items = []
         for item in current_items:
@@ -720,6 +894,84 @@ def _budget_entry_from_messages(
     }
 
 
+def _build_prompt_budget_from_parts(
+    current_items: list[dict[str, Any]],
+    system_items: list[dict[str, Any]],
+    context_blocks: list[tuple[str, list[str]]],
+    recent_items: list[dict[str, Any]],
+    *,
+    has_memory_state: bool,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    if system_items:
+        entries.append(
+            _budget_entry_from_messages(
+                "request_system_items",
+                system_items,
+                source="request_input",
+            )
+        )
+    for name, blocks in context_blocks:
+        if blocks:
+            entries.append(_budget_entry_from_text_blocks(name, blocks))
+    if recent_items:
+        entries.append(
+            _budget_entry_from_messages(
+                "recent_message_context",
+                recent_items,
+                source="memory_state_recent_messages" if has_memory_state else "request_input",
+            )
+        )
+
+    optimized_role_counts: dict[str, int] = {}
+    optimized_message_count = 0
+    for item in system_items:
+        role = str(item.get("role") or "unknown")
+        optimized_role_counts[role] = optimized_role_counts.get(role, 0) + 1
+        optimized_message_count += 1
+    for _, blocks in context_blocks:
+        optimized_role_counts["system"] = optimized_role_counts.get("system", 0) + len(blocks)
+        optimized_message_count += len(blocks)
+    for item in recent_items:
+        role = str(item.get("role") or "unknown")
+        optimized_role_counts[role] = optimized_role_counts.get(role, 0) + 1
+        optimized_message_count += 1
+
+    total_estimated_tokens = sum(entry["estimated_tokens"] for entry in entries)
+    total_chars = sum(entry["char_count"] for entry in entries)
+    top_entries = sorted(entries, key=lambda entry: entry["estimated_tokens"], reverse=True)[:5]
+
+    payload = {
+        "estimate_method": "chars_div_4_plus_message_overhead",
+        "total_estimated_prompt_tokens": total_estimated_tokens,
+        "total_char_count": total_chars,
+        "optimized_message_count": optimized_message_count,
+        "optimized_role_counts": optimized_role_counts,
+        "entries": entries,
+        "top_entries": top_entries,
+        "has_memory_state": has_memory_state,
+        "request_item_count": len(current_items),
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _compose_optimized_messages(
+    current_items: list[dict[str, Any]],
+    system_items: list[dict[str, Any]],
+    context_blocks: list[tuple[str, list[str]]],
+    recent_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    optimized: list[dict[str, Any]] = [item for item in system_items]
+    for _, blocks in context_blocks:
+        for block in blocks:
+            optimized.append({"role": "system", "content": block})
+    optimized.extend(recent_items)
+    return optimized if optimized else current_items
+
+
 def build_prompt_budget_breakdown(
     request_input: list[Any],
     state: MemoryState | None = None,
@@ -749,57 +1001,199 @@ def build_prompt_budget_breakdown(
         response_style_block=response_style_block,
         task_scratchpad_block=task_scratchpad_block,
     )
+    return _build_prompt_budget_from_parts(
+        current_items,
+        system_items,
+        context_blocks,
+        recent_items,
+        has_memory_state=state is not None,
+    )
 
-    entries: list[dict[str, Any]] = []
-    if system_items:
-        entries.append(
-            _budget_entry_from_messages(
-                "request_system_items",
+
+def build_optimized_messages_with_budget(
+    request_input: list[Any],
+    state: MemoryState | None = None,
+    memory_mode: str | None = None,
+    user_profile_block: str | None = None,
+    repo_instruction_blocks: list[str] | None = None,
+    hook_instruction_blocks: list[str] | None = None,
+    tool_memory_block: str | None = None,
+    skill_blocks: list[str] | None = None,
+    workflow_blocks: list[str] | None = None,
+    response_style_block: str | None = None,
+    task_scratchpad_block: str | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    current_items, system_items, recent_items = _optimized_message_parts(request_input, state)
+    base_context_blocks = _system_context_blocks(
+        state=state,
+        memory_mode=memory_mode,
+        user_profile_block=user_profile_block,
+        repo_instruction_blocks=repo_instruction_blocks,
+        hook_instruction_blocks=hook_instruction_blocks,
+        tool_memory_block=tool_memory_block,
+        skill_blocks=skill_blocks,
+        workflow_blocks=workflow_blocks,
+        response_style_block=response_style_block,
+        task_scratchpad_block=task_scratchpad_block,
+    )
+    budget = _build_prompt_budget_from_parts(
+        current_items,
+        system_items,
+        base_context_blocks,
+        recent_items,
+        has_memory_state=state is not None,
+        extra={
+            "compaction": {
+                "applied": False,
+                "soft_limit_tokens": prompt_soft_token_limit(),
+                "hard_limit_tokens": prompt_hard_token_limit(),
+                "target_tokens": prompt_target_token_limit(),
+            }
+        },
+    )
+
+    if state is None:
+        return _compose_optimized_messages(current_items, system_items, base_context_blocks, recent_items), budget
+
+    stored_recent_messages = [msg for msg in state.recent_messages if msg.role != "system"]
+    if not stored_recent_messages:
+        return _compose_optimized_messages(current_items, system_items, base_context_blocks, recent_items), budget
+
+    soft_limit = prompt_soft_token_limit()
+    hard_limit = prompt_hard_token_limit()
+    target_tokens = prompt_target_token_limit()
+    keep_recent = min(compact_recent_messages_limit(memory_mode), len(stored_recent_messages))
+    min_recent = min(min_compact_recent_messages(), len(stored_recent_messages))
+    if budget["total_estimated_prompt_tokens"] <= soft_limit or keep_recent >= len(stored_recent_messages):
+        return _compose_optimized_messages(current_items, system_items, base_context_blocks, recent_items), budget
+
+    def _build_compacted_candidate(
+        recent_keep: int,
+        *,
+        aggressive: bool,
+        compact_tool_memory: bool,
+    ) -> tuple[list[tuple[str, list[str]]], list[dict[str, Any]], dict[str, Any]] | None:
+        if recent_keep >= len(stored_recent_messages):
+            return None
+        dropped_messages = stored_recent_messages[:-recent_keep]
+        kept_messages = stored_recent_messages[-recent_keep:]
+        compacted_recent_block = _render_compacted_recent_context(
+            dropped_messages,
+            state.task_journal.repo if state.task_journal else None,
+            aggressive=aggressive,
+        )
+        compacted_context_blocks = _system_context_blocks(
+            state=state,
+            memory_mode=memory_mode,
+            user_profile_block=user_profile_block,
+            repo_instruction_blocks=repo_instruction_blocks,
+            hook_instruction_blocks=hook_instruction_blocks,
+            tool_memory_block=(
+                _compact_tool_memory_block(tool_memory_block)
+                if compact_tool_memory
+                else tool_memory_block
+            ),
+            skill_blocks=skill_blocks,
+            workflow_blocks=workflow_blocks,
+            response_style_block=response_style_block,
+            task_scratchpad_block=task_scratchpad_block,
+        )
+        if compacted_recent_block:
+            inserted = False
+            augmented_blocks: list[tuple[str, list[str]]] = []
+            for name, blocks in compacted_context_blocks:
+                augmented_blocks.append((name, list(blocks)))
+                if name == "conversation_memory":
+                    augmented_blocks.append(
+                        ("compacted_recent_context", [compacted_recent_block])
+                    )
+                    inserted = True
+            if not inserted:
+                augmented_blocks.append(("compacted_recent_context", [compacted_recent_block]))
+            compacted_context_blocks = augmented_blocks
+
+        compacted_recent_items = _recent_items_from_stored_messages(kept_messages)
+        compacted_budget = _build_prompt_budget_from_parts(
+            current_items,
+            system_items,
+            compacted_context_blocks,
+            compacted_recent_items,
+            has_memory_state=True,
+            extra={
+                "compaction": {
+                    "applied": True,
+                    "soft_limit_tokens": soft_limit,
+                    "hard_limit_tokens": hard_limit,
+                    "target_tokens": target_tokens,
+                    "strategy": "hard" if aggressive else "soft",
+                    "dropped_recent_messages": len(dropped_messages),
+                    "kept_recent_messages": len(kept_messages),
+                    "compacted_tool_memory": compact_tool_memory,
+                }
+            },
+        )
+        return compacted_context_blocks, compacted_recent_items, compacted_budget
+
+    candidate = _build_compacted_candidate(
+        keep_recent,
+        aggressive=False,
+        compact_tool_memory=False,
+    )
+    if candidate is None:
+        return _compose_optimized_messages(current_items, system_items, base_context_blocks, recent_items), budget
+
+    compacted_context_blocks, compacted_recent_items, compacted_budget = candidate
+    if compacted_budget["total_estimated_prompt_tokens"] <= hard_limit:
+        return (
+            _compose_optimized_messages(
+                current_items,
                 system_items,
-                source="request_input",
-            )
-        )
-    for name, blocks in context_blocks:
-        if blocks:
-            entries.append(_budget_entry_from_text_blocks(name, blocks))
-    if recent_items:
-        entries.append(
-            _budget_entry_from_messages(
-                "recent_message_context",
-                recent_items,
-                source="memory_state_recent_messages" if state is not None else "request_input",
-            )
+                compacted_context_blocks,
+                compacted_recent_items,
+            ),
+            compacted_budget,
         )
 
-    optimized_role_counts: dict[str, int] = {}
-    optimized_message_count = 0
-    for item in system_items:
-        role = str(item.get("role") or "unknown")
-        optimized_role_counts[role] = optimized_role_counts.get(role, 0) + 1
-        optimized_message_count += 1
-    for _, blocks in context_blocks:
-        optimized_role_counts["system"] = optimized_role_counts.get("system", 0) + len(blocks)
-        optimized_message_count += len(blocks)
-    for item in recent_items:
-        role = str(item.get("role") or "unknown")
-        optimized_role_counts[role] = optimized_role_counts.get(role, 0) + 1
-        optimized_message_count += 1
+    aggressive_keep = max(min_recent, min(keep_recent - 4, max(min_recent, len(stored_recent_messages) // 2)))
+    aggressive_candidate = _build_compacted_candidate(
+        aggressive_keep,
+        aggressive=True,
+        compact_tool_memory=True,
+    )
+    if aggressive_candidate is None:
+        return (
+            _compose_optimized_messages(
+                current_items,
+                system_items,
+                compacted_context_blocks,
+                compacted_recent_items,
+            ),
+            compacted_budget,
+        )
 
-    total_estimated_tokens = sum(entry["estimated_tokens"] for entry in entries)
-    total_chars = sum(entry["char_count"] for entry in entries)
-    top_entries = sorted(entries, key=lambda entry: entry["estimated_tokens"], reverse=True)[:5]
+    aggressive_context_blocks, aggressive_recent_items, aggressive_budget = aggressive_candidate
+    selected_context_blocks = aggressive_context_blocks
+    selected_recent_items = aggressive_recent_items
+    selected_budget = aggressive_budget
 
-    return {
-        "estimate_method": "chars_div_4_plus_message_overhead",
-        "total_estimated_prompt_tokens": total_estimated_tokens,
-        "total_char_count": total_chars,
-        "optimized_message_count": optimized_message_count,
-        "optimized_role_counts": optimized_role_counts,
-        "entries": entries,
-        "top_entries": top_entries,
-        "has_memory_state": state is not None,
-        "request_item_count": len(current_items),
-    }
+    if (
+        compacted_budget["total_estimated_prompt_tokens"] <= target_tokens
+        or compacted_budget["total_estimated_prompt_tokens"]
+        < aggressive_budget["total_estimated_prompt_tokens"]
+    ):
+        selected_context_blocks = compacted_context_blocks
+        selected_recent_items = compacted_recent_items
+        selected_budget = compacted_budget
+
+    return (
+        _compose_optimized_messages(
+            current_items,
+            system_items,
+            selected_context_blocks,
+            selected_recent_items,
+        ),
+        selected_budget,
+    )
 
 
 def build_optimized_messages(
@@ -815,13 +1209,8 @@ def build_optimized_messages(
     response_style_block: str | None = None,
     task_scratchpad_block: str | None = None,
 ) -> list[dict[str, Any]]:
-    current_items, system_items, recent_items = _optimized_message_parts(
+    optimized, _ = build_optimized_messages_with_budget(
         request_input,
-        state,
-    )
-
-    optimized: list[dict[str, Any]] = [item for item in system_items]
-    for _, blocks in _system_context_blocks(
         state=state,
         memory_mode=memory_mode,
         user_profile_block=user_profile_block,
@@ -832,11 +1221,8 @@ def build_optimized_messages(
         workflow_blocks=workflow_blocks,
         response_style_block=response_style_block,
         task_scratchpad_block=task_scratchpad_block,
-    ):
-        for block in blocks:
-            optimized.append({"role": "system", "content": block})
-    optimized.extend(recent_items)
-    return optimized if optimized else current_items
+    )
+    return optimized
 
 
 def assistant_outputs_to_items(outputs: list[Any]) -> list[dict[str, Any]]:

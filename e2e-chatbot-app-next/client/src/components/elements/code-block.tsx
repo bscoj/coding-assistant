@@ -1,6 +1,8 @@
 import { cn } from '@/lib/utils';
+import { CheckIcon, CopyIcon } from '../icons';
 import {
   Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -76,6 +78,17 @@ const LANGUAGE_ALIASES: Record<string, string> = {
 function normalizeLanguage(language: string): string {
   const lowered = language.trim().toLowerCase();
   return LANGUAGE_ALIASES[lowered] ?? (lowered || 'text');
+}
+
+function languageLabel(language: string): string {
+  const normalized = normalizeLanguage(language);
+  if (normalized === 'text' || normalized === 'plain' || normalized === 'plaintext') {
+    return 'text';
+  }
+  if (normalized === 'markup') {
+    return 'html';
+  }
+  return normalized;
 }
 
 async function loadPrismCore(): Promise<PrismApi> {
@@ -182,12 +195,18 @@ const renderFallbackCodeSurface = ({
   children,
   props,
   showLineNumbers,
+  language,
+  onCopy,
+  copied,
 }: {
   code: string;
   className?: string;
   children?: ReactNode;
   props?: HTMLAttributes<HTMLDivElement>;
   showLineNumbers?: boolean;
+  language: string;
+  onCopy: () => void;
+  copied: boolean;
 }) => {
   const lines = code.split('\n');
 
@@ -199,6 +218,24 @@ const renderFallbackCodeSurface = ({
       )}
       {...(props ?? {})}
     >
+      <div className="flex items-center justify-between border-b border-white/[0.08] bg-white/[0.03] px-[1.15rem] py-2">
+        <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/42">
+          {languageLabel(language)}
+        </div>
+        <div className="flex items-center gap-2">
+          {children}
+          <button
+            type="button"
+            onClick={onCopy}
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
+            aria-label={copied ? 'Copied code' : 'Copy code'}
+            title={copied ? 'Copied' : 'Copy code'}
+          >
+            {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
+            <span>{copied ? 'Copied' : 'Copy'}</span>
+          </button>
+        </div>
+      </div>
       <div className="relative overflow-x-auto px-[1.15rem] py-[1.05rem]">
         {showLineNumbers ? (
           <div className="grid min-w-fit grid-cols-[auto_1fr] gap-x-4 font-mono text-[0.88rem] leading-[1.72] text-[#f3f5f7]">
@@ -216,11 +253,6 @@ const renderFallbackCodeSurface = ({
             <code>{code}</code>
           </pre>
         )}
-        {children ? (
-          <div className="absolute top-2 right-2 flex items-center gap-2">
-            {children}
-          </div>
-        ) : null}
       </div>
     </div>
   );
@@ -235,7 +267,17 @@ export const CodeBlock = ({
   ...props
 }: CodeBlockProps) => {
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const normalizedLanguage = useMemo(() => normalizeLanguage(language), [language]);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }, [code]);
 
   useEffect(() => {
     let cancelled = false;
@@ -268,6 +310,16 @@ export const CodeBlock = ({
     };
   }, [code, normalizedLanguage]);
 
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      setCopied(false);
+    }, 1600);
+    return () => window.clearTimeout(timeout);
+  }, [copied]);
+
   if (!highlightedHtml || showLineNumbers) {
     return renderFallbackCodeSurface({
       code,
@@ -275,6 +327,9 @@ export const CodeBlock = ({
       children,
       props,
       showLineNumbers,
+      language: normalizedLanguage,
+      onCopy: handleCopy,
+      copied,
     });
   }
 
@@ -286,6 +341,24 @@ export const CodeBlock = ({
       )}
       {...props}
     >
+      <div className="flex items-center justify-between border-b border-white/[0.08] bg-white/[0.03] px-[1.15rem] py-2">
+        <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/42">
+          {languageLabel(normalizedLanguage)}
+        </div>
+        <div className="flex items-center gap-2">
+          {children}
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
+            aria-label={copied ? 'Copied code' : 'Copy code'}
+            title={copied ? 'Copied' : 'Copy code'}
+          >
+            {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
+            <span>{copied ? 'Copied' : 'Copy'}</span>
+          </button>
+        </div>
+      </div>
       <div className="relative overflow-x-auto px-[1.15rem] py-[1.05rem]">
         <pre className="m-0 whitespace-pre font-mono text-[0.88rem] leading-[1.72] text-[#f3f5f7]">
           <code
@@ -293,11 +366,6 @@ export const CodeBlock = ({
             dangerouslySetInnerHTML={{ __html: highlightedHtml }}
           />
         </pre>
-        {children ? (
-          <div className="absolute top-2 right-2 flex items-center gap-2">
-            {children}
-          </div>
-        ) : null}
       </div>
     </div>
   );

@@ -401,6 +401,12 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     let finalUsage: LanguageModelUsage | undefined;
     let traceId: string | null = null;
     const streamId = generateUUID();
+    let activeWriter:
+      | {
+          write: (chunk: { type: string; data: unknown }) => void;
+        }
+      | null = null;
+    let hasWrittenMemoryStatus = false;
 
     const model = await myProvider.languageModel(selectedChatModel);
     const modelMessages = await convertToModelMessages(uiMessages, {
@@ -447,6 +453,22 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
         onChunk: ({ chunk }) => {
           if (chunk.type === 'raw') {
             const raw = chunk.rawValue as any;
+            if (
+              !hasWrittenMemoryStatus &&
+              raw?.type === 'response.output_item.done' &&
+              raw?.item?.type === 'codex_status' &&
+              raw?.item?.status === 'memory_compaction' &&
+              activeWriter
+            ) {
+              hasWrittenMemoryStatus = true;
+              activeWriter.write({
+                type: 'data-memoryStatus',
+                data:
+                  typeof raw?.item?.message === 'string'
+                    ? raw.item.message
+                    : 'Compressing memory...',
+              });
+            }
             // Extract trace in Databricks serving endpoint output format, if present
             if (raw?.type === 'response.output_item.done') {
               const traceIdFromChunk =
@@ -491,6 +513,14 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       // rather than the AI SDK's default short-id format (e.g. "Xt8nZiQRj1fS4yiU").
       generateId: generateUUID,
       execute: async ({ writer }) => {
+        activeWriter = writer;
+        const writeUsageIfAvailable = () => {
+          if (!finalUsage) {
+            return;
+          }
+          writer.write({ type: 'data-usage', data: finalUsage });
+        };
+
         const runGenerateFallback = async (reason: string) => {
           console.log(`[Chat] ${reason}; falling back to generateText...`);
           const fallbackResult = await fallbackToGenerateText(
@@ -516,7 +546,9 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
             }
           }
 
+          writeUsageIfAvailable();
           writer.write({ type: 'data-traceId', data: traceId });
+          activeWriter = null;
           return;
         }
 
@@ -566,8 +598,10 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
           }
         }
 
+        writeUsageIfAvailable();
         // Write traceId so the client knows whether feedback is supported.
         writer.write({ type: 'data-traceId', data: traceId });
+        activeWriter = null;
       },
       onFinish: async ({ responseMessage }) => {
         // Store in-memory for ephemeral mode (also useful when DB is available)

@@ -14,6 +14,8 @@ import {
 import { PlusIcon, CloudOffIcon } from './icons';
 import { cn } from '../lib/utils';
 import { Skeleton } from './ui/skeleton';
+import type { LanguageModelUsage } from 'ai';
+import { formatTokenCount, formatUsageLine } from '@/lib/token-usage';
 
 const RepoPicker = lazy(() =>
   import('./repo-picker').then((module) => ({ default: module.RepoPicker })),
@@ -62,12 +64,16 @@ export function ChatHeader({
   isLoadingTitle,
   selectedModel,
   onSelectModel,
+  totalTokenUsage,
+  latestTokenUsage,
 }: {
   title?: string,
   empty?: boolean,
   isLoadingTitle?: boolean,
   selectedModel?: string,
   onSelectModel?: (model: string) => void,
+  totalTokenUsage?: LanguageModelUsage,
+  latestTokenUsage?: LanguageModelUsage,
 }) {
   const navigate = useNavigate();
   const { chatHistoryEnabled, feedbackEnabled, oboMissingScopes, repo, models } = useConfig();
@@ -75,6 +81,11 @@ export function ChatHeader({
   const [profileOpen, setProfileOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const modelLabel = selectedModel ?? models?.defaultModel ?? 'Select Model';
+  const totalTokens = totalTokenUsage?.totalTokens ?? (
+    (totalTokenUsage?.inputTokens ?? 0) + (totalTokenUsage?.outputTokens ?? 0)
+  );
+  const latestUsageLine = formatUsageLine(latestTokenUsage);
+  const totalUsageLine = formatUsageLine(totalTokenUsage);
 
   return (
     <>
@@ -96,6 +107,22 @@ export function ChatHeader({
         }
 
         <div className="ml-auto flex items-center gap-2">
+          {totalTokens > 0 && (
+            <div
+              className="hidden rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1 text-[11px] text-white/70 lg:block"
+              title={totalUsageLine ?? undefined}
+            >
+              {formatTokenCount(totalTokens)} total
+            </div>
+          )}
+          {latestUsageLine && (
+            <div
+              className="hidden rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1 text-[11px] text-white/58 xl:block"
+              title={latestUsageLine}
+            >
+              Last: {formatTokenCount(latestTokenUsage?.totalTokens ?? ((latestTokenUsage?.inputTokens ?? 0) + (latestTokenUsage?.outputTokens ?? 0)))}
+            </div>
+          )}
           <Button
             variant="outline"
             className="h-8 max-w-[220px] rounded-full border-white/[0.08] bg-white/[0.04] px-3 text-xs text-white/80 hover:bg-white/[0.08] hover:text-white"
