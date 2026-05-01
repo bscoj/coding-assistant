@@ -70,7 +70,7 @@ export function formatUsageLine(usage: LanguageModelUsage | undefined): string |
   if (input <= 0 && output <= 0 && total <= 0) {
     return null;
   }
-  return `${formatTokenCount(input)} in · ${formatTokenCount(output)} out · ${formatTokenCount(total)} total`;
+  return `${formatTokenCount(input)} in | ${formatTokenCount(output)} out | ${formatTokenCount(total)} total`;
 }
 
 export function formatUsageInline(usage: LanguageModelUsage | undefined): string | null {
@@ -82,5 +82,5 @@ export function formatUsageInline(usage: LanguageModelUsage | undefined): string
   if (input <= 0 && output <= 0) {
     return null;
   }
-  return `${formatTokenCount(input)} in · ${formatTokenCount(output)} out`;
+  return `${formatTokenCount(input)} in | ${formatTokenCount(output)} out`;
 }

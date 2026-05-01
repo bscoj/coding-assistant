@@ -11,11 +11,8 @@ import {
 } from 'lucide-react';
 import { DbIcon } from './ui/db-icon';
 import { PencilIcon, CopyIcon, ThumbsUpIcon, ThumbsDownIcon } from './icons';
-import {
-  formatUsageInline,
-  formatUsageLine,
-  getMessageUsage,
-} from '@/lib/token-usage';
+import { getMessageUsage } from '@/lib/token-usage';
+import { TokenUsagePill } from './token-usage-pill';
 
 function PureMessageActions({
   message,
@@ -65,8 +62,6 @@ function PureMessageActions({
     | undefined;
   const feedbackSupported = traceIdPart === undefined || traceIdPart.data !== null;
   const usage = getMessageUsage(message);
-  const usageLine = formatUsageLine(usage);
-  const usageInline = formatUsageInline(usage);
 
   const handleFeedback = useCallback(
     async (feedbackType: 'thumbs_up' | 'thumbs_down') => {
@@ -164,15 +159,8 @@ function PureMessageActions({
           <CopyIcon />
         </Action>
       )}
-      {usageInline && (
-        <div
-          className="rounded-full border border-white/[0.06] bg-white/[0.04] px-2.5 py-1 text-[11px] text-white/68"
-          title={usageLine ?? undefined}
-        >
-          {usageInline}
-        </div>
-      )}
       {feedbackEnabled && feedbackSupported && feedbackButtons}
+      <TokenUsagePill usage={usage} />
       {errorCount > 0 && onToggleErrors && (
         <Action
           tooltip={showErrors ? 'Hide errors' : 'Show errors'}

@@ -15,7 +15,7 @@ import { PlusIcon, CloudOffIcon } from './icons';
 import { cn } from '../lib/utils';
 import { Skeleton } from './ui/skeleton';
 import type { LanguageModelUsage } from 'ai';
-import { formatUsageInline, formatUsageLine } from '@/lib/token-usage';
+import { TokenUsagePill } from './token-usage-pill';
 
 const RepoPicker = lazy(() =>
   import('./repo-picker').then((module) => ({ default: module.RepoPicker })),
@@ -88,8 +88,6 @@ export function ChatHeader({
   const [profileOpen, setProfileOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const modelLabel = selectedModel ?? models?.defaultModel ?? 'Select Model';
-  const totalUsageLine = formatUsageLine(totalTokenUsage);
-  const totalUsageInline = formatUsageInline(totalTokenUsage);
   const totalStoredPreferences =
     (profiles?.global.activeCount ?? 0) + (profiles?.project?.activeCount ?? 0);
   const totalLearnedPreferences =
@@ -115,6 +113,7 @@ export function ChatHeader({
         }
 
         <div className="ml-auto flex items-center gap-2">
+          <TokenUsagePill usage={totalTokenUsage} />
           <Button
             variant="outline"
             className="h-8 max-w-[220px] rounded-full border-white/[0.08] bg-white/[0.04] px-3 text-xs text-white/80 hover:bg-white/[0.08] hover:text-white"
@@ -123,14 +122,6 @@ export function ChatHeader({
             <Cpu className="mr-1.5 h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{modelLabel}</span>
           </Button>
-          {totalUsageInline && (
-            <div
-              className="rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1 text-[11px] text-white/70"
-              title={totalUsageLine ?? undefined}
-            >
-              {totalUsageInline}
-            </div>
-          )}
           <Button
             variant="outline"
             className="h-8 max-w-[180px] rounded-full border-white/[0.08] bg-white/[0.04] px-3 text-xs text-white/80 hover:bg-white/[0.08] hover:text-white"
