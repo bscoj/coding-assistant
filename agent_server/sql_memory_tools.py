@@ -10,9 +10,8 @@ from mlflow.genai.agent_server import get_request_headers
 
 from agent_server.analytics_context_tools import sync_validated_pattern_into_analytics_context
 from agent_server.filesystem_tools import (
+    configured_workspace_root,
     workspace_root,
-    workspace_selected,
-    workspace_selection_error,
 )
 from agent_server.memory_store import get_memory_store
 from agent_server.sql_memory_store import (
@@ -29,15 +28,23 @@ SQL_CODE_BLOCK_PATTERN = re.compile(
 )
 
 
-def _resolve_repo_path(path: str) -> Path:
+def _resolve_sql_source_path(path: str) -> Path:
     candidate = Path(path)
-    root = workspace_root().resolve()
+    repo_root = configured_workspace_root()
+    if repo_root is None:
+        if not candidate.is_absolute():
+            raise ValueError(
+                "Relative SQL file paths require a selected repo. Select a repo first or provide an absolute path."
+            )
+        return candidate.resolve()
+
+    root = repo_root.resolve()
     if not candidate.is_absolute():
         candidate = (root / candidate).resolve()
     else:
         candidate = candidate.resolve()
     if candidate != root and root not in candidate.parents:
-        raise ValueError(f"Path {candidate} is outside workspace root {root}")
+        raise ValueError(f"Path {candidate} is outside selected repo {root}")
     return candidate
 
 
@@ -104,10 +111,14 @@ def _search_response(query: str, results: list[dict]) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
-def _workspace_root_or_error() -> str | None:
-    if not workspace_selected():
-        return workspace_selection_error()
-    return None
+def _stored_source_path(target: Path) -> str:
+    repo_root = configured_workspace_root()
+    if repo_root is None:
+        return str(target)
+    try:
+        return str(target.relative_to(repo_root.resolve()))
+    except ValueError:
+        return str(target)
 
 
 def _save_sql_pattern_payload(
@@ -167,8 +178,6 @@ def prepare_sql_knowledge_capture(
     semantic_notes: str = "",
 ) -> str:
     """Analyze a SQL example before saving it so you can identify missing business context and the follow-up questions needed to turn it into durable SQL knowledge."""
-    if error := _workspace_root_or_error():
-        return error
     normalized_sql = sql_text.strip()
     if not normalized_sql:
         return "Provide non-empty SQL text."
@@ -246,18 +255,14 @@ def prepare_sql_knowledge_capture(
 
 @tool
 def validated_sql_store_overview(limit: int = 10) -> str:
-    """Show the current repo's validated SQL memory, including common tables, join patterns, and recent trusted queries."""
-    if error := _workspace_root_or_error():
-        return error
+    """Show validated SQL memory for the active SQL scope. With a selected repo this stays repo-specific; otherwise it uses the shared global SQL scope."""
     payload = get_sql_store().overview(str(workspace_root()), limit=max(1, min(limit, 20)))
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
 @tool
 def search_validated_sql_patterns(query: str, limit: int = 4) -> str:
-    """Search validated SQL patterns for the current repo by business term, table, join, filter, or metric keyword. Returns lightweight summaries, not full SQL text."""
-    if error := _workspace_root_or_error():
-        return error
+    """Search validated SQL patterns for the active SQL scope by business term, table, join, filter, or metric keyword. Returns lightweight summaries, not full SQL text."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
@@ -273,9 +278,7 @@ def search_validated_sql_patterns(query: str, limit: int = 4) -> str:
 
 @tool
 def search_validated_sql_by_table_or_join(query: str, limit: int = 4) -> str:
-    """Find validated SQL patterns by table name, alias, or join clue so you can quickly reuse known-good data combinations. Returns lightweight summaries, not full SQL text."""
-    if error := _workspace_root_or_error():
-        return error
+    """Find validated SQL patterns by table name, alias, or join clue inside the active SQL scope so you can quickly reuse known-good data combinations. Returns lightweight summaries, not full SQL text."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty table or join query."
@@ -292,8 +295,6 @@ def search_validated_sql_by_table_or_join(query: str, limit: int = 4) -> str:
 @tool
 def get_validated_sql_pattern(pattern_id: str) -> str:
     """Read one validated SQL pattern in full, including the saved SQL text, tables, joins, and notes."""
-    if error := _workspace_root_or_error():
-        return error
     try:
         payload = get_sql_store().get_pattern(pattern_id.strip(), str(workspace_root()))
     except KeyError:
@@ -319,8 +320,6 @@ def save_validated_sql_from_chat_turn(
     block_index: int = 1,
 ) -> str:
     """Save a SQL query from a specific chat turn without repeating the full SQL in the tool arguments."""
-    if error := _workspace_root_or_error():
-        return error
     conversation_id = _conversation_id()
     if not conversation_id:
         return "Chat-based SQL save is unavailable because this request has no conversation id."
@@ -382,8 +381,6 @@ def save_latest_assistant_sql_pattern(
     lookback_turns: int = 12,
 ) -> str:
     """Save the most recent assistant SQL query from this chat without repeating the full SQL in the tool arguments."""
-    if error := _workspace_root_or_error():
-        return error
     conversation_id = _conversation_id()
     if not conversation_id:
         return "Chat-based SQL save is unavailable because this request has no conversation id."
@@ -448,9 +445,7 @@ def save_validated_sql_pattern(
     dialect: str = "spark_sql",
     tags_csv: str = "",
 ) -> str:
-    """Save a known-good SQL query for the current repo so future SQL tasks can reuse its tables and joins. Returns a compact summary to avoid echoing the full SQL back into context."""
-    if error := _workspace_root_or_error():
-        return error
+    """Save a known-good SQL query into the active SQL scope so future SQL tasks can reuse its tables and joins. Returns a compact summary to avoid echoing the full SQL back into context."""
     trimmed_sql = sql_text.strip()
     if not trimmed_sql:
         return "Provide non-empty SQL text."
@@ -488,10 +483,11 @@ def save_validated_sql_file(
     dialect: str = "spark_sql",
     tags_csv: str = "",
 ) -> str:
-    """Save a SQL file from the current repo into validated SQL memory so its tables and joins become easy to reuse later. Returns a compact summary to avoid echoing the full SQL back into context."""
-    if error := _workspace_root_or_error():
-        return error
-    target = _resolve_repo_path(path)
+    """Save a SQL file into validated SQL memory so its tables and joins become easy to reuse later. Relative paths use the selected repo; without a repo, provide an absolute path."""
+    try:
+        target = _resolve_sql_source_path(path)
+    except ValueError as exc:
+        return str(exc)
     if not target.exists():
         return f"No file found at {path!r}."
     sql_text = target.read_text(encoding="utf-8")
@@ -509,7 +505,7 @@ def save_validated_sql_file(
         metrics_csv=metrics_csv,
         filters_csv=filters_csv,
         business_terms_csv=business_terms_csv,
-        source_path=str(target.relative_to(workspace_root())),
+        source_path=_stored_source_path(target),
     )
 
 

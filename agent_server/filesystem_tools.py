@@ -23,7 +23,7 @@ APPROVAL_SERVER_LABEL = "local-filesystem"
 STAGED_WRITE_MARKER = "__staged_write_request__"
 NO_WORKSPACE_SELECTED_MARKER = "__NO_WORKSPACE_SELECTED__"
 NO_WORKSPACE_SELECTED_ERROR = (
-    "No repository is selected. Choose a repo from the repo picker before asking for repo-aware search, SQL, or file changes."
+    "No repository is selected. Choose a repo from the repo picker before asking for repo-aware search or file changes."
 )
 _FILE_READ_CACHE: dict[str, Any] = {}
 _TOOL_ACTIVITY_CACHE: dict[str, Any] = {}

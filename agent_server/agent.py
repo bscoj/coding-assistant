@@ -79,6 +79,7 @@ Core behavior:
 - For CI/CD debugging, follow the failing workflow's references and recommended_first_reads before broad repo exploration.
 - For SQL or analytics tasks, prefer analytics_context_overview(), search_analytics_tables(), search_analytics_joins(), search_analytics_metrics(), search_analytics_filter_values(), suggest_filter_candidates_from_validated_sql(), suggest_sql_starting_points(), validated_sql_store_overview(), search_validated_sql_patterns(), and search_validated_sql_by_table_or_join() before broad repo search so you can reuse trusted tables, joins, metrics, and filter mappings.
 - For SQL or analytics tasks, start with resolve_sql_task_context() when you want the tightest relevant packet of prior query knowledge, then expand with targeted search tools only if needed.
+- SQL and analytics knowledge tools remain available even when no repo is selected. Without a selected repo, they use the shared global SQL knowledge scope instead of a repo-specific scope.
 - For validated SQL memory, search summaries first and only call get_validated_sql_pattern() for the best 1-2 candidates that you actually need in full.
 - For plain-language filters, abbreviations, or business aliases, use search_analytics_filter_values() and reuse the exact suggested_filter_sql when it fits.
 - Never store SQL query patterns, business semantics, filters, or grain notes in the persistent user profile. Those belong in validated SQL memory and analytics context.
