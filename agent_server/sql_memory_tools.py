@@ -15,7 +15,13 @@ from agent_server.filesystem_tools import (
     workspace_selection_error,
 )
 from agent_server.memory_store import get_memory_store
-from agent_server.sql_memory_store import get_sql_store
+from agent_server.sql_memory_store import (
+    extract_filter_candidates,
+    extract_group_by_columns,
+    extract_metric_candidates,
+    extract_tables,
+    get_sql_store,
+)
 
 SQL_CODE_BLOCK_PATTERN = re.compile(
     r"```(?P<lang>[A-Za-z0-9_+-]*)\n(?P<code>.*?)(?:```|$)",
@@ -35,8 +41,12 @@ def _resolve_repo_path(path: str) -> Path:
     return candidate
 
 
+def _split_csv(values_csv: str) -> list[str]:
+    return [value.strip() for value in values_csv.split(",") if value.strip()]
+
+
 def _split_tags(tags_csv: str) -> list[str]:
-    return [value.strip() for value in tags_csv.split(",") if value.strip()]
+    return _split_csv(tags_csv)
 
 
 def _conversation_id() -> str | None:
@@ -108,6 +118,13 @@ def _save_sql_pattern_payload(
     validation_notes: str,
     dialect: str,
     tags_csv: str,
+    business_question: str = "",
+    grain: str = "",
+    semantic_notes: str = "",
+    dimensions_csv: str = "",
+    metrics_csv: str = "",
+    filters_csv: str = "",
+    business_terms_csv: str = "",
     source_path: str | None = None,
 ) -> str:
     payload = get_sql_store().save_pattern(
@@ -119,6 +136,13 @@ def _save_sql_pattern_payload(
         source_path=source_path,
         validation_notes=validation_notes.strip(),
         tags=_split_tags(tags_csv),
+        business_question=business_question.strip(),
+        grain=grain.strip(),
+        semantic_notes=semantic_notes.strip(),
+        dimensions=_split_csv(dimensions_csv),
+        metrics=_split_csv(metrics_csv),
+        filters=_split_csv(filters_csv),
+        business_terms=_split_csv(business_terms_csv),
     )
     sync_validated_pattern_into_analytics_context(payload)
     return json.dumps(
@@ -129,6 +153,95 @@ def _save_sql_pattern_payload(
         indent=2,
         ensure_ascii=True,
     )
+
+
+@tool
+def prepare_sql_knowledge_capture(
+    sql_text: str,
+    business_question: str = "",
+    grain: str = "",
+    dimensions_csv: str = "",
+    metrics_csv: str = "",
+    filters_csv: str = "",
+    business_terms_csv: str = "",
+    semantic_notes: str = "",
+) -> str:
+    """Analyze a SQL example before saving it so you can identify missing business context and the follow-up questions needed to turn it into durable SQL knowledge."""
+    if error := _workspace_root_or_error():
+        return error
+    normalized_sql = sql_text.strip()
+    if not normalized_sql:
+        return "Provide non-empty SQL text."
+
+    inferred_tables = extract_tables(normalized_sql)
+    inferred_dimensions = extract_group_by_columns(normalized_sql)
+    inferred_metrics = extract_metric_candidates(normalized_sql)
+    inferred_filter_candidates = extract_filter_candidates(normalized_sql)
+    inferred_filters = [candidate["suggested_filter_sql"] for candidate in inferred_filter_candidates]
+    inferred_terms: list[str] = []
+    for candidate in inferred_filter_candidates:
+        inferred_terms.extend(candidate["alias_suggestions"])
+
+    provided_dimensions = _split_csv(dimensions_csv)
+    provided_metrics = _split_csv(metrics_csv)
+    provided_filters = _split_csv(filters_csv)
+    provided_terms = _split_csv(business_terms_csv)
+
+    missing_context: list[str] = []
+    follow_up_questions: list[str] = []
+    if not business_question.strip():
+        missing_context.append("business_question")
+        follow_up_questions.append(
+            "What business question or recurring analysis does this query answer?"
+        )
+    if not grain.strip():
+        missing_context.append("grain")
+        follow_up_questions.append(
+            "What is the intended output grain, such as one row per claim, member, facility, or month?"
+        )
+    if not provided_metrics and not inferred_metrics:
+        missing_context.append("metrics")
+        follow_up_questions.append(
+            "Which metric or KPI should this query be remembered for?"
+        )
+    if not provided_dimensions and not inferred_dimensions:
+        missing_context.append("dimensions")
+        follow_up_questions.append(
+            "Which dimensions or breakdown columns matter when reusing this query?"
+        )
+    if not provided_filters and inferred_filters:
+        missing_context.append("filters")
+        follow_up_questions.append(
+            "Which filters here are durable business logic rather than one-off query parameters?"
+        )
+    if not provided_terms and inferred_terms:
+        missing_context.append("business_terms")
+        follow_up_questions.append(
+            "What business words, abbreviations, or aliases should map to this query pattern?"
+        )
+    if not semantic_notes.strip():
+        follow_up_questions.append(
+            "Are there any grain, fanout, exclusion, or semantic caveats future queries should preserve?"
+        )
+
+    payload = {
+        "business_question": business_question.strip(),
+        "grain": grain.strip(),
+        "provided_dimensions": provided_dimensions,
+        "provided_metrics": provided_metrics,
+        "provided_filters": provided_filters,
+        "provided_business_terms": provided_terms,
+        "semantic_notes": semantic_notes.strip(),
+        "inferred_tables": inferred_tables,
+        "inferred_dimensions": inferred_dimensions,
+        "inferred_metrics": inferred_metrics,
+        "inferred_filters": inferred_filters,
+        "inferred_business_terms": sorted(set(inferred_terms))[:10],
+        "missing_context": missing_context,
+        "follow_up_questions": follow_up_questions,
+        "ready_to_save": len(missing_context) == 0,
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
 @tool
@@ -196,6 +309,13 @@ def save_validated_sql_from_chat_turn(
     validation_notes: str = "",
     dialect: str = "spark_sql",
     tags_csv: str = "",
+    business_question: str = "",
+    grain: str = "",
+    semantic_notes: str = "",
+    dimensions_csv: str = "",
+    metrics_csv: str = "",
+    filters_csv: str = "",
+    business_terms_csv: str = "",
     block_index: int = 1,
 ) -> str:
     """Save a SQL query from a specific chat turn without repeating the full SQL in the tool arguments."""
@@ -228,6 +348,13 @@ def save_validated_sql_from_chat_turn(
         validation_notes=validation_notes,
         dialect=dialect,
         tags_csv=tags_csv,
+        business_question=business_question,
+        grain=grain,
+        semantic_notes=semantic_notes,
+        dimensions_csv=dimensions_csv,
+        metrics_csv=metrics_csv,
+        filters_csv=filters_csv,
+        business_terms_csv=business_terms_csv,
         source_path=f"chat_turn:{turn_index}",
     )
     payload = json.loads(result)
@@ -244,6 +371,13 @@ def save_latest_assistant_sql_pattern(
     validation_notes: str = "",
     dialect: str = "spark_sql",
     tags_csv: str = "",
+    business_question: str = "",
+    grain: str = "",
+    semantic_notes: str = "",
+    dimensions_csv: str = "",
+    metrics_csv: str = "",
+    filters_csv: str = "",
+    business_terms_csv: str = "",
     search_hint: str = "",
     lookback_turns: int = 12,
 ) -> str:
@@ -277,6 +411,13 @@ def save_latest_assistant_sql_pattern(
             validation_notes=validation_notes,
             dialect=dialect,
             tags_csv=tags_csv,
+            business_question=business_question,
+            grain=grain,
+            semantic_notes=semantic_notes,
+            dimensions_csv=dimensions_csv,
+            metrics_csv=metrics_csv,
+            filters_csv=filters_csv,
+            business_terms_csv=business_terms_csv,
             source_path=f"chat_turn:{turn_index}",
         )
         payload = json.loads(result)
@@ -296,6 +437,13 @@ def save_validated_sql_pattern(
     sql_text: str,
     summary: str,
     validation_notes: str = "",
+    business_question: str = "",
+    grain: str = "",
+    semantic_notes: str = "",
+    dimensions_csv: str = "",
+    metrics_csv: str = "",
+    filters_csv: str = "",
+    business_terms_csv: str = "",
     source_path: str = "",
     dialect: str = "spark_sql",
     tags_csv: str = "",
@@ -313,6 +461,13 @@ def save_validated_sql_pattern(
         validation_notes=validation_notes,
         dialect=dialect,
         tags_csv=tags_csv,
+        business_question=business_question,
+        grain=grain,
+        semantic_notes=semantic_notes,
+        dimensions_csv=dimensions_csv,
+        metrics_csv=metrics_csv,
+        filters_csv=filters_csv,
+        business_terms_csv=business_terms_csv,
         source_path=source_path.strip() or None,
     )
 
@@ -323,6 +478,13 @@ def save_validated_sql_file(
     summary: str,
     name: str = "",
     validation_notes: str = "",
+    business_question: str = "",
+    grain: str = "",
+    semantic_notes: str = "",
+    dimensions_csv: str = "",
+    metrics_csv: str = "",
+    filters_csv: str = "",
+    business_terms_csv: str = "",
     dialect: str = "spark_sql",
     tags_csv: str = "",
 ) -> str:
@@ -340,11 +502,19 @@ def save_validated_sql_file(
         validation_notes=validation_notes,
         dialect=dialect,
         tags_csv=tags_csv,
+        business_question=business_question,
+        grain=grain,
+        semantic_notes=semantic_notes,
+        dimensions_csv=dimensions_csv,
+        metrics_csv=metrics_csv,
+        filters_csv=filters_csv,
+        business_terms_csv=business_terms_csv,
         source_path=str(target.relative_to(workspace_root())),
     )
 
 
 SQL_MEMORY_TOOLS = [
+    prepare_sql_knowledge_capture,
     validated_sql_store_overview,
     search_validated_sql_patterns,
     search_validated_sql_by_table_or_join,

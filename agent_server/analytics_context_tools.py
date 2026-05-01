@@ -42,8 +42,19 @@ def sync_validated_pattern_into_analytics_context(pattern: dict[str, object]) ->
     workspace = str(pattern.get("workspace_root") or _current_workspace_root())
     name = str(pattern.get("name") or "validated sql pattern").strip() or "validated sql pattern"
     summary = str(pattern.get("summary") or "").strip()
+    business_question = str(pattern.get("business_question") or "").strip()
+    grain = str(pattern.get("grain") or "").strip()
+    semantic_notes = str(pattern.get("semantic_notes") or "").strip()
+    metrics = [str(metric).strip() for metric in pattern.get("metrics", []) if str(metric).strip()]
+    dimensions = [
+        str(dimension).strip()
+        for dimension in pattern.get("dimensions", [])
+        if str(dimension).strip()
+    ]
     pattern_id = str(pattern.get("id") or "").strip()
     source = f"validated_sql:{pattern_id}" if pattern_id else "validated_sql"
+    table_summary = business_question or summary
+    table_usage_notes = semantic_notes or f"Seen in validated SQL pattern '{name}'."
 
     for table in pattern.get("tables", []):
         table_name = str(table).strip()
@@ -53,10 +64,25 @@ def sync_validated_pattern_into_analytics_context(pattern: dict[str, object]) ->
             workspace_root=workspace,
             table_name=table_name,
             layer=infer_table_layer(table_name),
-            usage_notes=f"Seen in validated SQL pattern '{name}'.",
+            summary=table_summary,
+            grain=grain,
+            usage_notes=table_usage_notes,
             tags=["validated-sql"],
             source=source,
         )
+
+    if metrics and table_summary:
+        source_table = str(pattern.get("tables", [""])[0]).strip() if pattern.get("tables") else ""
+        for metric in metrics[:8]:
+            store.upsert_metric_context(
+                workspace_root=workspace,
+                metric_name=metric,
+                definition=f"Derived from validated SQL pattern '{name}'. {table_summary}".strip(),
+                source_table=source_table,
+                dimensions=dimensions[:10],
+                tags=["validated-sql"],
+                source=source,
+            )
 
     sql_text = str(pattern.get("sql_text") or "")
     for pair in extract_join_pairs(sql_text):
@@ -67,7 +93,7 @@ def sync_validated_pattern_into_analytics_context(pattern: dict[str, object]) ->
             join_type=pair["join_type"],
             join_condition=pair["join_condition"],
             relationship="validated_pattern",
-            grain_notes=f"Derived from validated SQL pattern '{name}'.",
+            grain_notes=f"Derived from validated SQL pattern '{name}'. {grain}".strip(),
             tags=["validated-sql"],
             source=source,
         )
@@ -306,6 +332,108 @@ def register_analytics_filter_value(
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
+def _suggest_sql_context_follow_ups(
+    task: str,
+    tables: list[dict],
+    metrics: list[dict],
+    filter_values: list[dict],
+    patterns: list[dict],
+) -> list[str]:
+    lowered = task.lower()
+    questions: list[str] = []
+    if not patterns and not tables:
+        questions.append("Which source table or subject area should this query begin from?")
+    if not metrics and any(
+        token in lowered
+        for token in ["metric", "kpi", "count", "sum", "avg", "average", "rate", "how many", "total"]
+    ):
+        questions.append("Which exact business metric definition should this query implement?")
+    if not filter_values and any(
+        token in lowered
+        for token in ["filter", "only", "exclude", "excluding", "where", "for ", "among", "segment"]
+    ):
+        questions.append("Which exact business filters, aliases, or exclusions should be applied?")
+    if not patterns and any(
+        token in lowered
+        for token in [" daily", " weekly", " monthly", "yearly", " by ", "per ", "grain"]
+    ):
+        questions.append("What output grain or grouping should the final result return?")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for question in questions:
+        normalized = question.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(question)
+    return deduped[:4]
+
+
+@tool
+def resolve_sql_task_context(task: str, limit: int = 4) -> str:
+    """Retrieve only the most relevant SQL knowledge for a task: best matching validated patterns, tables, joins, metrics, and filter mappings plus the key follow-up questions if context is still missing."""
+    if error := _workspace_root_or_error():
+        return error
+    needle = task.strip()
+    if not needle:
+        return "Provide a non-empty task description."
+
+    analytics_store = get_analytics_context_store()
+    sql_store = get_sql_store()
+    workspace = _current_workspace_root()
+    bounded_limit = max(1, min(limit, 8))
+
+    tables = analytics_store.search_tables(workspace, needle, limit=bounded_limit)
+    joins = analytics_store.search_joins(workspace, needle, limit=bounded_limit)
+    metrics = analytics_store.search_metrics(workspace, needle, limit=bounded_limit)
+    filter_values = analytics_store.search_filter_values(workspace, needle, limit=bounded_limit)
+    patterns = sql_store.search_patterns(workspace, needle, limit=bounded_limit)
+
+    payload = {
+        "task": needle,
+        "tables": tables[:bounded_limit],
+        "joins": joins[:bounded_limit],
+        "metrics": metrics[:bounded_limit],
+        "filters": [
+            {
+                "concept_name": item["concept_name"],
+                "canonical_value": item["canonical_value"],
+                "source_table": item["source_table"],
+                "column_name": item["column_name"],
+                "suggested_filter_sql": item["suggested_filter_sql"],
+                "synonyms": item["synonyms"][:6],
+            }
+            for item in filter_values[:bounded_limit]
+        ],
+        "validated_patterns": [
+            {
+                "id": pattern["id"],
+                "name": pattern["name"],
+                "summary": pattern["summary"],
+                "business_question": pattern.get("business_question", ""),
+                "grain": pattern.get("grain", ""),
+                "metrics": pattern.get("metrics", [])[:6],
+                "dimensions": pattern.get("dimensions", [])[:6],
+                "filters": pattern.get("filters", [])[:6],
+                "business_terms": pattern.get("business_terms", [])[:8],
+                "tables": pattern["tables"][:6],
+                "joins": pattern["joins"][:4],
+            }
+            for pattern in patterns[:bounded_limit]
+        ],
+        "follow_up_questions": _suggest_sql_context_follow_ups(
+            needle,
+            tables=tables,
+            metrics=metrics,
+            filter_values=filter_values,
+            patterns=patterns,
+        ),
+        "guidance": "Read full SQL only for the best 1-2 validated patterns with get_validated_sql_pattern(id).",
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=True)
+
+
 @tool
 def suggest_sql_starting_points(task: str, limit: int = 6) -> str:
     """Suggest trusted starting points for a SQL task by combining curated analytics context and validated SQL patterns."""
@@ -363,6 +491,12 @@ def suggest_sql_starting_points(task: str, limit: int = 6) -> str:
                 "id": pattern["id"],
                 "name": pattern["name"],
                 "summary": pattern["summary"],
+                "business_question": pattern.get("business_question", ""),
+                "grain": pattern.get("grain", ""),
+                "dimensions": pattern.get("dimensions", [])[:6],
+                "metrics": pattern.get("metrics", [])[:6],
+                "filters": pattern.get("filters", [])[:6],
+                "business_terms": pattern.get("business_terms", [])[:8],
                 "tables": pattern["tables"],
                 "joins": pattern["joins"][:4],
             }
@@ -538,6 +672,7 @@ ANALYTICS_CONTEXT_TOOLS = [
     search_analytics_metrics,
     search_analytics_filter_values,
     suggest_filter_candidates_from_validated_sql,
+    resolve_sql_task_context,
     suggest_sql_starting_points,
     verify_sql_query,
     register_analytics_table,

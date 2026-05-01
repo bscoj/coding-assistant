@@ -23,6 +23,13 @@ PROFILE_KINDS = {
     "user_fact",
     "constraint",
 }
+SQL_CODE_BLOCK_PATTERN = re.compile(r"```(?:sql|spark_sql|postgres|postgresql|mysql)?\b", re.I)
+SQL_CAPTURE_ACTION_PATTERN = re.compile(
+    r"(?is)\b(save|store|remember|learn|reuse|curate|capture|teach)\b.*\b(sql|query|queries|pattern|metric|grain|filter|filters|semantic|semantics|business term|business words|alias|aliases)\b"
+)
+SQL_CAPTURE_SIGNAL_PATTERN = re.compile(
+    r"(?is)\b(sql|query|queries|pattern|patterns|metric|grain|filter|filters|semantic|semantics|business term|business words|alias|aliases|table|join)\b"
+)
 
 
 @dataclass(slots=True)
@@ -514,6 +521,9 @@ Do not store:
 - temporary implementation choices from one debugging session
 - repo findings or code changes that belong in task memory instead
 - information that would surprise the user if it appeared in a completely new chat
+- SQL query examples, validated query patterns, table semantics, join rules, metric definitions,
+  business vocabulary, grain notes, or filter mappings. Those belong in the SQL knowledge stores,
+  not in the user profile.
 
 {scope_specific_guidance}
 
@@ -575,6 +585,22 @@ def _extract_json_block(text: str) -> dict[str, Any]:
     if start == -1 or end == -1 or end <= start:
         raise ValueError("No JSON object found in user profile extractor output")
     return json.loads(candidate[start : end + 1])
+
+
+def _interaction_targets_sql_knowledge(interaction_items: list[dict[str, Any]]) -> bool:
+    text = render_items(interaction_items)
+    lowered = text.lower()
+    if not lowered:
+        return False
+    has_sql_content = bool(SQL_CODE_BLOCK_PATTERN.search(text)) or (
+        "select" in lowered and " from " in lowered
+    )
+    has_sql_capture_intent = bool(SQL_CAPTURE_ACTION_PATTERN.search(text))
+    if has_sql_content and has_sql_capture_intent:
+        return True
+    if has_sql_capture_intent and SQL_CAPTURE_SIGNAL_PATTERN.search(text):
+        return True
+    return False
 
 
 async def _maybe_refresh_profile(
@@ -687,6 +713,9 @@ async def maybe_refresh_user_profiles(
     workspace_root: str | Path | None,
 ) -> None:
     if not user_profile_enabled() or not interaction_items:
+        return
+    if _interaction_targets_sql_knowledge(interaction_items):
+        logger.info("Skipping persistent profile refresh for SQL knowledge capture interaction.")
         return
 
     await _maybe_refresh_profile(get_user_profile_store(), interaction_items)

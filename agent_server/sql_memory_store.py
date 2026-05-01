@@ -17,6 +17,12 @@ JOIN_PATTERN = re.compile(
     r"(?is)\b((?:left|right|full(?:\s+outer)?|inner|cross)?\s*join)\s+([`\"\[\]\w\.-]+)"
     r"(?:\s+(?:as\s+)?[\w$]+)?\s+on\s+(.*?)(?=\b(?:left|right|full(?:\s+outer)?|inner|cross)?\s*join\b|\bwhere\b|\bgroup\b|\border\b|\bhaving\b|\bqualify\b|\blimit\b|$)"
 )
+GROUP_BY_PATTERN = re.compile(
+    r"(?is)\bgroup\s+by\s+(.*?)(?=\border\b|\bhaving\b|\bqualify\b|\blimit\b|$)"
+)
+AGGREGATE_PATTERN = re.compile(
+    r"(?is)\b(count\s*\(\s*distinct\s+[^)]+\)|count\s*\([^)]*\)|sum\s*\([^)]*\)|avg\s*\([^)]*\)|min\s*\([^)]*\)|max\s*\([^)]*\))(?:\s+as\s+([A-Za-z_][\w$]*))?"
+)
 FILTER_EQ_PATTERN = re.compile(
     r"""(?is)\b([A-Za-z_][\w.$]*)\s*(=|!=|<>)\s*(['"])(.{1,160}?)\3"""
 )
@@ -82,6 +88,23 @@ def _parse_json_list(raw: str | None) -> list[str]:
 
 def _json_list(values: list[str]) -> str:
     return json.dumps(values, ensure_ascii=True)
+
+
+def _dedupe_strings(values: list[str], limit: int = 24) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for raw in values:
+        value = " ".join(str(raw).split()).strip()
+        if not value:
+            continue
+        lowered = value.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        deduped.append(value[:240])
+        if len(deduped) >= limit:
+            break
+    return deduped
 
 
 def _clean_identifier(value: str) -> str:
@@ -156,6 +179,29 @@ def extract_join_pairs(sql: str) -> list[dict[str, str]]:
         )
         left_table = right_table
     return pairs[:20]
+
+
+def extract_group_by_columns(sql: str) -> list[str]:
+    match = GROUP_BY_PATTERN.search(sql)
+    if not match:
+        return []
+    raw_clause = " ".join(match.group(1).split()).strip()
+    if not raw_clause:
+        return []
+    columns = re.split(r",(?![^(]*\))", raw_clause)
+    return _dedupe_strings(columns, limit=16)
+
+
+def extract_metric_candidates(sql: str) -> list[str]:
+    candidates: list[str] = []
+    for match in AGGREGATE_PATTERN.finditer(sql):
+        alias = (match.group(2) or "").strip()
+        expression = " ".join(match.group(1).split()).strip()
+        if alias:
+            candidates.append(alias)
+        elif expression:
+            candidates.append(expression)
+    return _dedupe_strings(candidates, limit=16)
 
 
 def _alias_suggestions(value: str) -> list[str]:
@@ -279,9 +325,16 @@ class ValidatedSqlStore:
                   dialect TEXT NOT NULL DEFAULT 'spark_sql',
                   source_path TEXT,
                   validation_notes TEXT NOT NULL DEFAULT '',
+                  business_question TEXT NOT NULL DEFAULT '',
+                  grain TEXT NOT NULL DEFAULT '',
+                  semantic_notes TEXT NOT NULL DEFAULT '',
                   tags_json TEXT NOT NULL DEFAULT '[]',
                   tables_json TEXT NOT NULL DEFAULT '[]',
                   joins_json TEXT NOT NULL DEFAULT '[]',
+                  dimensions_json TEXT NOT NULL DEFAULT '[]',
+                  metrics_json TEXT NOT NULL DEFAULT '[]',
+                  filters_json TEXT NOT NULL DEFAULT '[]',
+                  business_terms_json TEXT NOT NULL DEFAULT '[]',
                   use_count INTEGER NOT NULL DEFAULT 0,
                   created_at TEXT NOT NULL,
                   updated_at TEXT NOT NULL,
@@ -295,6 +348,45 @@ class ValidatedSqlStore:
                 ON validated_sql_patterns(workspace_root, updated_at DESC);
                 """
             )
+            self._ensure_column(
+                conn, "validated_sql_patterns", "business_question", "TEXT NOT NULL DEFAULT ''"
+            )
+            self._ensure_column(
+                conn, "validated_sql_patterns", "grain", "TEXT NOT NULL DEFAULT ''"
+            )
+            self._ensure_column(
+                conn, "validated_sql_patterns", "semantic_notes", "TEXT NOT NULL DEFAULT ''"
+            )
+            self._ensure_column(
+                conn, "validated_sql_patterns", "dimensions_json", "TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._ensure_column(
+                conn, "validated_sql_patterns", "metrics_json", "TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._ensure_column(
+                conn, "validated_sql_patterns", "filters_json", "TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._ensure_column(
+                conn,
+                "validated_sql_patterns",
+                "business_terms_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )
+
+    @staticmethod
+    def _ensure_column(
+        conn: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name in columns:
+            return
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
     def save_pattern(
         self,
@@ -307,12 +399,33 @@ class ValidatedSqlStore:
         source_path: str | None,
         validation_notes: str,
         tags: list[str],
+        business_question: str = "",
+        grain: str = "",
+        semantic_notes: str = "",
+        dimensions: list[str] | None = None,
+        metrics: list[str] | None = None,
+        filters: list[str] | None = None,
+        business_terms: list[str] | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
         normalized_sql = normalize_sql(sql_text)
         pattern_hash = _sql_hash(normalized_sql)
         tables = extract_tables(normalized_sql)
         joins = extract_join_clauses(normalized_sql)
+        normalized_dimensions = _dedupe_strings(
+            list(dimensions or []) or extract_group_by_columns(normalized_sql),
+            limit=16,
+        )
+        normalized_metrics = _dedupe_strings(
+            list(metrics or []) or extract_metric_candidates(normalized_sql),
+            limit=16,
+        )
+        inferred_filters = [candidate["suggested_filter_sql"] for candidate in extract_filter_candidates(normalized_sql)]
+        normalized_filters = _dedupe_strings(list(filters or []) or inferred_filters, limit=16)
+        normalized_business_terms = _dedupe_strings(list(business_terms or []), limit=20)
+        normalized_question = " ".join(business_question.split()).strip()
+        normalized_grain = " ".join(grain.split()).strip()
+        normalized_semantic_notes = " ".join(semantic_notes.split()).strip()
         workspace_root = str(Path(workspace_root).resolve())
 
         with self._connect() as conn:
@@ -330,7 +443,9 @@ class ValidatedSqlStore:
                     """
                     UPDATE validated_sql_patterns
                     SET name = ?, summary = ?, sql_text = ?, dialect = ?, source_path = ?,
-                        validation_notes = ?, tags_json = ?, tables_json = ?, joins_json = ?,
+                        validation_notes = ?, business_question = ?, grain = ?, semantic_notes = ?,
+                        tags_json = ?, tables_json = ?, joins_json = ?, dimensions_json = ?,
+                        metrics_json = ?, filters_json = ?, business_terms_json = ?,
                         updated_at = ?, use_count = use_count + 1, last_used_at = ?
                     WHERE id = ?
                     """,
@@ -341,9 +456,38 @@ class ValidatedSqlStore:
                         dialect,
                         source_path,
                         validation_notes,
+                        normalized_question or existing["business_question"],
+                        normalized_grain or existing["grain"],
+                        normalized_semantic_notes or existing["semantic_notes"],
                         _json_list(tags),
                         _json_list(tables),
                         _json_list(joins),
+                        _json_list(
+                            _dedupe_strings(
+                                _parse_json_list(existing["dimensions_json"])
+                                + normalized_dimensions,
+                                limit=16,
+                            )
+                        ),
+                        _json_list(
+                            _dedupe_strings(
+                                _parse_json_list(existing["metrics_json"]) + normalized_metrics,
+                                limit=16,
+                            )
+                        ),
+                        _json_list(
+                            _dedupe_strings(
+                                _parse_json_list(existing["filters_json"]) + normalized_filters,
+                                limit=16,
+                            )
+                        ),
+                        _json_list(
+                            _dedupe_strings(
+                                _parse_json_list(existing["business_terms_json"])
+                                + normalized_business_terms,
+                                limit=20,
+                            )
+                        ),
                         now,
                         now,
                         pattern_id,
@@ -355,10 +499,12 @@ class ValidatedSqlStore:
                     """
                     INSERT INTO validated_sql_patterns (
                       id, workspace_root, name, summary, sql_text, sql_hash, dialect,
-                      source_path, validation_notes, tags_json, tables_json, joins_json,
-                      use_count, created_at, updated_at, last_used_at
+                      source_path, validation_notes, business_question, grain, semantic_notes,
+                      tags_json, tables_json, joins_json, dimensions_json, metrics_json,
+                      filters_json, business_terms_json, use_count, created_at, updated_at,
+                      last_used_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                     """,
                     (
                         pattern_id,
@@ -370,9 +516,16 @@ class ValidatedSqlStore:
                         dialect,
                         source_path,
                         validation_notes,
+                        normalized_question,
+                        normalized_grain,
+                        normalized_semantic_notes,
                         _json_list(tags),
                         _json_list(tables),
                         _json_list(joins),
+                        _json_list(normalized_dimensions),
+                        _json_list(normalized_metrics),
+                        _json_list(normalized_filters),
+                        _json_list(normalized_business_terms),
                         now,
                         now,
                         now,
@@ -411,8 +564,15 @@ class ValidatedSqlStore:
                     OR lower(summary) LIKE ?
                     OR lower(sql_text) LIKE ?
                     OR lower(validation_notes) LIKE ?
+                    OR lower(business_question) LIKE ?
+                    OR lower(grain) LIKE ?
+                    OR lower(semantic_notes) LIKE ?
                     OR lower(tables_json) LIKE ?
                     OR lower(joins_json) LIKE ?
+                    OR lower(dimensions_json) LIKE ?
+                    OR lower(metrics_json) LIKE ?
+                    OR lower(filters_json) LIKE ?
+                    OR lower(business_terms_json) LIKE ?
                     OR lower(tags_json) LIKE ?
                   )
                 ORDER BY use_count DESC, updated_at DESC
@@ -420,6 +580,13 @@ class ValidatedSqlStore:
                 """,
                 (
                     workspace_root,
+                    needle,
+                    needle,
+                    needle,
+                    needle,
+                    needle,
+                    needle,
+                    needle,
                     needle,
                     needle,
                     needle,
@@ -447,11 +614,14 @@ class ValidatedSqlStore:
         patterns = [self._row_to_pattern(row) for row in rows]
         table_counts: dict[str, int] = {}
         join_counts: dict[str, int] = {}
+        metric_counts: dict[str, int] = {}
         for pattern in patterns:
             for table in pattern["tables"]:
                 table_counts[table] = table_counts.get(table, 0) + 1
             for join in pattern["joins"]:
                 join_counts[join] = join_counts.get(join, 0) + 1
+            for metric in pattern["metrics"]:
+                metric_counts[metric] = metric_counts.get(metric, 0) + 1
 
         top_tables = sorted(
             [{"table": table, "count": count} for table, count in table_counts.items()],
@@ -461,11 +631,18 @@ class ValidatedSqlStore:
             [{"join": join, "count": count} for join, count in join_counts.items()],
             key=lambda item: (-item["count"], item["join"].lower()),
         )[:limit]
+        top_metrics = sorted(
+            [{"metric": metric, "count": count} for metric, count in metric_counts.items()],
+            key=lambda item: (-item["count"], item["metric"].lower()),
+        )[:limit]
         recent_patterns = [
             {
                 "id": pattern["id"],
                 "name": pattern["name"],
                 "summary": pattern["summary"],
+                "business_question": pattern["business_question"],
+                "grain": pattern["grain"],
+                "metrics": pattern["metrics"][:4],
                 "tables": pattern["tables"][:6],
                 "updated_at": pattern["updated_at"],
             }
@@ -476,6 +653,7 @@ class ValidatedSqlStore:
             "pattern_count": len(patterns),
             "top_tables": top_tables,
             "top_joins": top_joins,
+            "top_metrics": top_metrics,
             "recent_patterns": recent_patterns,
         }
 
@@ -527,6 +705,12 @@ class ValidatedSqlStore:
                 [
                     pattern["name"],
                     pattern["summary"],
+                    pattern["business_question"],
+                    pattern["semantic_notes"],
+                    " ".join(pattern["dimensions"]),
+                    " ".join(pattern["metrics"]),
+                    " ".join(pattern["filters"]),
+                    " ".join(pattern["business_terms"]),
                     pattern["validation_notes"],
                     " ".join(pattern["tables"]),
                     " ".join(pattern["joins"]),
@@ -603,12 +787,19 @@ class ValidatedSqlStore:
             "workspace_root": pattern["workspace_root"],
             "name": pattern["name"],
             "summary": pattern["summary"],
+            "business_question": pattern["business_question"],
+            "grain": pattern["grain"],
+            "semantic_notes": pattern["semantic_notes"],
             "dialect": pattern["dialect"],
             "source_path": pattern["source_path"],
             "validation_notes": pattern["validation_notes"],
             "tags": list(pattern["tags"]),
             "tables": list(pattern["tables"])[:8],
             "joins": list(pattern["joins"])[:4],
+            "dimensions": list(pattern["dimensions"])[:6],
+            "metrics": list(pattern["metrics"])[:6],
+            "filters": list(pattern["filters"])[:6],
+            "business_terms": list(pattern["business_terms"])[:8],
             "table_count": len(pattern["tables"]),
             "join_count": len(pattern["joins"]),
             "sql_char_count": len(sql_text),
@@ -634,9 +825,20 @@ class ValidatedSqlStore:
             "dialect": row["dialect"],
             "source_path": row["source_path"],
             "validation_notes": row["validation_notes"],
+            "business_question": row["business_question"] if "business_question" in row.keys() else "",
+            "grain": row["grain"] if "grain" in row.keys() else "",
+            "semantic_notes": row["semantic_notes"] if "semantic_notes" in row.keys() else "",
             "tags": _parse_json_list(row["tags_json"]),
             "tables": _parse_json_list(row["tables_json"]),
             "joins": _parse_json_list(row["joins_json"]),
+            "dimensions": _parse_json_list(row["dimensions_json"])
+            if "dimensions_json" in row.keys()
+            else [],
+            "metrics": _parse_json_list(row["metrics_json"]) if "metrics_json" in row.keys() else [],
+            "filters": _parse_json_list(row["filters_json"]) if "filters_json" in row.keys() else [],
+            "business_terms": _parse_json_list(row["business_terms_json"])
+            if "business_terms_json" in row.keys()
+            else [],
             "use_count": row["use_count"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
