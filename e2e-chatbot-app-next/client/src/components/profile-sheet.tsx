@@ -35,6 +35,7 @@ import {
   useAppConfig,
   type MemoryMode,
   type ResponseMode,
+  type SqlKnowledgeMode,
 } from '@/contexts/AppConfigContext';
 
 type ProfileScope = 'global' | 'project';
@@ -59,6 +60,32 @@ type ProfileDocument = {
   workspace_name: string | null;
   updated_at: string | null;
   entries: ProfileEntry[];
+};
+
+type SqlKnowledgeCounts = {
+  validatedSqlPatterns: number;
+  analyticsTables: number;
+  analyticsJoins: number;
+  analyticsMetrics: number;
+  analyticsFilterValues: number;
+};
+
+type SqlKnowledgeStatus = {
+  workspace_root: string;
+  requested_mode: SqlKnowledgeMode;
+  effective_mode: SqlKnowledgeMode;
+  profile: string | null;
+  local: SqlKnowledgeCounts;
+  active?: SqlKnowledgeCounts;
+  lakebase: {
+    configured: boolean;
+    instance_name: string | null;
+    project: string | null;
+    branch: string | null;
+    available: boolean;
+    error: string | null;
+    counts?: SqlKnowledgeCounts;
+  };
 };
 
 const EMPTY_PROFILE: ProfileDocument = {
@@ -180,6 +207,27 @@ async function saveProfile(scope: ProfileScope, entries: ProfileEntry[]) {
     body: JSON.stringify({ scope, entries }),
   });
   return (await response.json()) as ProfileDocument;
+}
+
+async function loadSqlKnowledgeStatus() {
+  const response = await fetchWithErrorHandlers('/api/config/sql-knowledge/status');
+  return (await response.json()) as SqlKnowledgeStatus;
+}
+
+async function syncSqlKnowledge(direction: 'push' | 'pull') {
+  const response = await fetchWithErrorHandlers('/api/config/sql-knowledge/sync', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ direction }),
+  });
+  return (await response.json()) as {
+    workspace_root: string;
+    direction: 'push' | 'pull';
+    counts: SqlKnowledgeCounts;
+    targetStatus: SqlKnowledgeStatus;
+  };
 }
 
 function SectionCard({
@@ -475,6 +523,48 @@ function StorageRow({ label, value }: { label: string; value: string | null | un
   );
 }
 
+function SqlKnowledgeCountsCard({
+  title,
+  counts,
+  tone = 'default',
+}: {
+  title: string;
+  counts: SqlKnowledgeCounts | undefined;
+  tone?: 'default' | 'accent';
+}) {
+  const total =
+    (counts?.validatedSqlPatterns ?? 0) +
+    (counts?.analyticsTables ?? 0) +
+    (counts?.analyticsJoins ?? 0) +
+    (counts?.analyticsMetrics ?? 0) +
+    (counts?.analyticsFilterValues ?? 0);
+
+  return (
+    <div
+      className={cn(
+        'rounded-2xl border px-3 py-3',
+        tone === 'accent'
+          ? 'border-emerald-300/12 bg-emerald-300/[0.05]'
+          : 'border-white/[0.06] bg-[#0f141b]',
+      )}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-medium text-white/86">{title}</div>
+        <div className="rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[11px] text-white/62">
+          {total} items
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <SummaryChip label="SQL" value={counts?.validatedSqlPatterns ?? 0} />
+        <SummaryChip label="Tables" value={counts?.analyticsTables ?? 0} />
+        <SummaryChip label="Joins" value={counts?.analyticsJoins ?? 0} />
+        <SummaryChip label="Metrics" value={counts?.analyticsMetrics ?? 0} />
+        <SummaryChip label="Filters" value={counts?.analyticsFilterValues ?? 0} />
+      </div>
+    </div>
+  );
+}
+
 export function ProfileSheet({
   open,
   onOpenChange,
@@ -488,9 +578,12 @@ export function ProfileSheet({
     memory,
     context,
     response,
+    sqlKnowledge,
     setMemoryMode,
     setContextMode,
     setResponseMode,
+    setSqlKnowledgeMode,
+    setLakebaseConfig,
     refreshConfig,
   } = useAppConfig();
   const [scope, setScope] = useState<ProfileScope>('global');
@@ -503,10 +596,18 @@ export function ProfileSheet({
   const [manualOpen, setManualOpen] = useState(true);
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
+  const [sqlKnowledgeOpen, setSqlKnowledgeOpen] = useState(true);
   const [editingEntryKey, setEditingEntryKey] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sqlStatus, setSqlStatus] = useState<SqlKnowledgeStatus | null>(null);
+  const [sqlStatusLoading, setSqlStatusLoading] = useState(false);
+  const [sqlStatusError, setSqlStatusError] = useState<string | null>(null);
+  const [sqlSyncDirection, setSqlSyncDirection] = useState<'push' | 'pull' | null>(null);
+  const [lakebaseProjectDraft, setLakebaseProjectDraft] = useState('');
+  const [lakebaseBranchDraft, setLakebaseBranchDraft] = useState('');
+  const [lakebaseInstanceDraft, setLakebaseInstanceDraft] = useState('');
 
   const canUseProjectScope = !!repo?.path;
   const isDirty = useMemo(() => {
@@ -561,6 +662,39 @@ export function ProfileSheet({
     };
   }, [open, scope, canUseProjectScope, refreshConfig]);
 
+  useEffect(() => {
+    setLakebaseProjectDraft(sqlKnowledge?.lakebase.project ?? '');
+    setLakebaseBranchDraft(sqlKnowledge?.lakebase.branch ?? '');
+    setLakebaseInstanceDraft(sqlKnowledge?.lakebase.instanceName ?? '');
+  }, [
+    sqlKnowledge?.lakebase.branch,
+    sqlKnowledge?.lakebase.instanceName,
+    sqlKnowledge?.lakebase.project,
+  ]);
+
+  async function refreshSqlStatus() {
+    if (!open) {
+      return;
+    }
+    setSqlStatusLoading(true);
+    setSqlStatusError(null);
+    try {
+      const status = await loadSqlKnowledgeStatus();
+      setSqlStatus(status);
+    } catch (err: unknown) {
+      setSqlStatusError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSqlStatusLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    void refreshSqlStatus();
+  }, [open, repo?.path, sqlKnowledge?.mode]);
+
   const activeEntries = useMemo(
     () => draftEntries.filter((entry) => entry.status === 'active'),
     [draftEntries],
@@ -586,6 +720,11 @@ export function ProfileSheet({
       manualCount: manualEntries.length,
     };
   }, [activeEntries.length, hiddenEntries.length, learnedEntries.length, manualEntries.length]);
+
+  const lakebaseDraftDirty =
+    lakebaseProjectDraft !== (sqlKnowledge?.lakebase.project ?? '') ||
+    lakebaseBranchDraft !== (sqlKnowledge?.lakebase.branch ?? '') ||
+    lakebaseInstanceDraft !== (sqlKnowledge?.lakebase.instanceName ?? '');
 
   async function persistEntries(
     nextEntries: ProfileEntry[],
@@ -741,6 +880,43 @@ export function ProfileSheet({
       return;
     }
     setScope(nextScope);
+  }
+
+  async function handleSqlModeChange(nextMode: SqlKnowledgeMode) {
+    setSqlStatusError(null);
+    try {
+      await setSqlKnowledgeMode(nextMode);
+      await refreshSqlStatus();
+    } catch (err: unknown) {
+      setSqlStatusError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleSaveLakebaseConnection() {
+    setSqlStatusError(null);
+    try {
+      await setLakebaseConfig({
+        project: lakebaseProjectDraft,
+        branch: lakebaseBranchDraft,
+        instanceName: lakebaseInstanceDraft,
+      });
+      await refreshSqlStatus();
+    } catch (err: unknown) {
+      setSqlStatusError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleSqlSync(direction: 'push' | 'pull') {
+    setSqlStatusError(null);
+    setSqlSyncDirection(direction);
+    try {
+      const payload = await syncSqlKnowledge(direction);
+      setSqlStatus(payload.targetStatus);
+    } catch (err: unknown) {
+      setSqlStatusError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSqlSyncDirection(null);
+    }
   }
 
   const viewButtons: Array<{ id: ProfileView; label: string }> = [
@@ -1163,6 +1339,167 @@ export function ProfileSheet({
               )
             ) : (
               <div className="space-y-4">
+                <DisclosureSection
+                  icon={<Database className="size-4" />}
+                  title="SQL knowledge store"
+                  description="Choose whether SQL patterns and analytics context read from local memory, shared Lakebase memory, or a local-first hybrid view."
+                  summary={
+                    sqlStatus?.effective_mode
+                      ? `Active: ${sqlStatus.effective_mode}`
+                      : sqlKnowledge?.mode
+                  }
+                  open={sqlKnowledgeOpen}
+                  onOpenChange={setSqlKnowledgeOpen}
+                >
+                  <div className="space-y-4">
+                    <div className="inline-flex rounded-full border border-white/[0.08] bg-black/20 p-1">
+                      {[
+                        { value: 'local', label: 'Local' },
+                        { value: 'lakebase', label: 'Lakebase' },
+                        { value: 'hybrid', label: 'Hybrid' },
+                      ].map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() =>
+                            handleSqlModeChange(option.value as SqlKnowledgeMode)
+                          }
+                          className={cn(
+                            'rounded-full px-3 py-1.5 text-xs transition',
+                            sqlKnowledge?.mode === option.value
+                              ? 'bg-white text-black'
+                              : 'text-white/65 hover:text-white',
+                          )}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <Input
+                        value={lakebaseProjectDraft}
+                        onChange={(event) => setLakebaseProjectDraft(event.target.value)}
+                        placeholder="Lakebase project"
+                        className="border-white/[0.08] bg-white/[0.04] text-white placeholder:text-white/35"
+                      />
+                      <Input
+                        value={lakebaseBranchDraft}
+                        onChange={(event) => setLakebaseBranchDraft(event.target.value)}
+                        placeholder="Branch"
+                        className="border-white/[0.08] bg-white/[0.04] text-white placeholder:text-white/35"
+                      />
+                      <Input
+                        value={lakebaseInstanceDraft}
+                        onChange={(event) => setLakebaseInstanceDraft(event.target.value)}
+                        placeholder="Instance name (optional)"
+                        className="border-white/[0.08] bg-white/[0.04] text-white placeholder:text-white/35"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleSaveLakebaseConnection}
+                        disabled={!lakebaseDraftDirty}
+                        className="rounded-full border-white/[0.08] bg-transparent text-white hover:bg-white/[0.06] hover:text-white"
+                      >
+                        Save connection
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void refreshSqlStatus()}
+                        disabled={sqlStatusLoading}
+                        className="rounded-full border-white/[0.08] bg-transparent text-white hover:bg-white/[0.06] hover:text-white"
+                      >
+                        {sqlStatusLoading ? 'Refreshing…' : 'Refresh status'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => handleSqlSync('push')}
+                        disabled={sqlSyncDirection !== null}
+                        className="rounded-full border-white/[0.08] bg-transparent text-white hover:bg-white/[0.06] hover:text-white"
+                      >
+                        {sqlSyncDirection === 'push'
+                          ? 'Pushing…'
+                          : 'Push local to Lakebase'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => handleSqlSync('pull')}
+                        disabled={sqlSyncDirection !== null}
+                        className="rounded-full border-white/[0.08] bg-transparent text-white hover:bg-white/[0.06] hover:text-white"
+                      >
+                        {sqlSyncDirection === 'pull'
+                          ? 'Pulling…'
+                          : 'Pull Lakebase to local'}
+                      </Button>
+                    </div>
+
+                    <div className="grid gap-2 sm:grid-cols-4">
+                      <SummaryChip label="Mode" value={sqlKnowledge?.mode ?? 'local'} />
+                      <SummaryChip
+                        label="Effective"
+                        value={sqlStatus?.effective_mode ?? sqlKnowledge?.mode ?? 'local'}
+                        emphasis="learned"
+                      />
+                      <SummaryChip
+                        label="Lakebase"
+                        value={sqlKnowledge?.lakebase.configured ? 'Configured' : 'Not set'}
+                        emphasis={
+                          sqlKnowledge?.lakebase.configured ? 'default' : 'muted'
+                        }
+                      />
+                      <SummaryChip
+                        label="Profile"
+                        value={sqlStatus?.profile ?? 'DEFAULT'}
+                        emphasis="muted"
+                      />
+                    </div>
+
+                    {sqlStatusError ? (
+                      <div className="rounded-2xl border border-red-300/12 bg-red-300/[0.05] px-3 py-3 text-sm text-red-100">
+                        {sqlStatusError}
+                      </div>
+                    ) : null}
+
+                    {sqlStatus?.lakebase.error ? (
+                      <div className="rounded-2xl border border-amber-300/12 bg-amber-300/[0.05] px-3 py-3 text-sm text-amber-100">
+                        {sqlStatus.lakebase.error}
+                      </div>
+                    ) : null}
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <SqlKnowledgeCountsCard
+                        title="Local store"
+                        counts={sqlStatus?.local}
+                      />
+                      <SqlKnowledgeCountsCard
+                        title="Lakebase store"
+                        counts={sqlStatus?.lakebase.counts}
+                        tone="accent"
+                      />
+                    </div>
+
+                    {sqlStatus?.active ? (
+                      <SqlKnowledgeCountsCard
+                        title="Active retrieval surface"
+                        counts={sqlStatus.active}
+                        tone="accent"
+                      />
+                    ) : null}
+
+                    <p className="text-xs leading-5 text-white/45">
+                      Hybrid keeps new saves local, reads local first, and layers the
+                      shared Lakebase knowledge on top when it is reachable.
+                    </p>
+                  </div>
+                </DisclosureSection>
+
                 <DisclosureSection
                   icon={<Database className="size-4" />}
                   title="Local storage"

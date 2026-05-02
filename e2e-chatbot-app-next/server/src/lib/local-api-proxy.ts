@@ -5,6 +5,28 @@ export function getConfiguredApiProxy(): string | undefined {
   return proxy ? proxy : undefined;
 }
 
+export function getConfiguredAgentRouteUrl(
+  pathname: string,
+): string | undefined {
+  const proxy = getConfiguredApiProxy();
+  if (!proxy) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(proxy);
+    url.pathname = pathname.startsWith('/') ? pathname : `/${pathname}`;
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    const [base] = proxy.split('?');
+    const origin = base.replace(/\/invocations\/?$/i, '');
+    const suffix = pathname.startsWith('/') ? pathname : `/${pathname}`;
+    return `${origin}${suffix}`;
+  }
+}
+
 export function shouldFailFastForLocalApiProxy(): boolean {
   const proxy = getConfiguredApiProxy();
   if (!proxy) {

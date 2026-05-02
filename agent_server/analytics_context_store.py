@@ -728,6 +728,20 @@ class AnalyticsContextStore:
             ).fetchall()
         return [self._row_to_join(row) for row in rows]
 
+    def list_metrics(self, workspace_root: str) -> list[dict[str, Any]]:
+        workspace_root = str(Path(workspace_root).resolve())
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM analytics_metrics
+                WHERE workspace_root = ?
+                ORDER BY updated_at DESC, metric_name ASC
+                """,
+                (workspace_root,),
+            ).fetchall()
+        return [self._row_to_metric(row) for row in rows]
+
     def list_filter_values(self, workspace_root: str) -> list[dict[str, Any]]:
         workspace_root = str(Path(workspace_root).resolve())
         with self._connect() as conn:
@@ -745,18 +759,8 @@ class AnalyticsContextStore:
     def overview(self, workspace_root: str, limit: int = 10) -> dict[str, Any]:
         tables = self.list_tables(workspace_root)
         joins = self.list_joins(workspace_root)
+        metrics = self.list_metrics(workspace_root)
         filter_values = self.list_filter_values(workspace_root)
-        with self._connect() as conn:
-            metric_rows = conn.execute(
-                """
-                SELECT *
-                FROM analytics_metrics
-                WHERE workspace_root = ?
-                ORDER BY updated_at DESC, metric_name ASC
-                """,
-                (str(Path(workspace_root).resolve()),),
-            ).fetchall()
-        metrics = [self._row_to_metric(row) for row in metric_rows]
         return {
             "workspace_root": str(Path(workspace_root).resolve()),
             "table_count": len(tables),

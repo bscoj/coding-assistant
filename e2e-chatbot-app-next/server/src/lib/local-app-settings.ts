@@ -6,6 +6,7 @@ import { readEnvFile, resolveAgentRoot } from './local-agent-config';
 export type MemoryMode = 'lean' | 'work' | 'raw';
 export type ContextMode = 'personalized' | 'fresh';
 export type ResponseMode = 'direct' | 'teach';
+export type SqlKnowledgeMode = 'local' | 'lakebase' | 'hybrid';
 
 export interface LocalMemoryConfig {
   mode: MemoryMode;
@@ -22,10 +23,24 @@ export interface LocalResponseConfig {
   mode: ResponseMode;
 }
 
+export interface LocalSqlKnowledgeConfig {
+  mode: SqlKnowledgeMode;
+  lakebase: {
+    project: string | null;
+    branch: string | null;
+    instanceName: string | null;
+    configured: boolean;
+  };
+}
+
 interface LocalAppSettings {
   memoryMode?: MemoryMode;
   contextMode?: ContextMode;
   responseMode?: ResponseMode;
+  sqlKnowledgeMode?: SqlKnowledgeMode;
+  lakebaseProject?: string | null;
+  lakebaseBranch?: string | null;
+  lakebaseInstanceName?: string | null;
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,6 +63,20 @@ function normalizeContextMode(value: unknown): ContextMode {
 
 function normalizeResponseMode(value: unknown): ResponseMode {
   return value === 'teach' ? 'teach' : 'direct';
+}
+
+function normalizeSqlKnowledgeMode(value: unknown): SqlKnowledgeMode {
+  if (value === 'lakebase') return 'lakebase';
+  if (value === 'hybrid') return 'hybrid';
+  return 'local';
+}
+
+function normalizeOptionalText(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function readSettings(): LocalAppSettings {
@@ -160,4 +189,73 @@ export function setLocalResponseMode(mode: ResponseMode): LocalResponseConfig {
     responseMode: normalizeResponseMode(mode),
   });
   return getLocalResponseConfig();
+}
+
+export function getLocalSqlKnowledgeConfig(): LocalSqlKnowledgeConfig {
+  const env = envValues();
+  const settings = readSettings();
+  const project = normalizeOptionalText(
+    settings.lakebaseProject ??
+      process.env.LOCAL_LAKEBASE_PROJECT ??
+      env.LAKEBASE_AUTOSCALING_PROJECT,
+  );
+  const branch = normalizeOptionalText(
+    settings.lakebaseBranch ??
+      process.env.LOCAL_LAKEBASE_BRANCH ??
+      env.LAKEBASE_AUTOSCALING_BRANCH,
+  );
+  const instanceName = normalizeOptionalText(
+    settings.lakebaseInstanceName ??
+      process.env.LOCAL_LAKEBASE_INSTANCE_NAME ??
+      env.LAKEBASE_INSTANCE_NAME,
+  );
+
+  return {
+    mode: normalizeSqlKnowledgeMode(
+      settings.sqlKnowledgeMode ??
+        process.env.LOCAL_SQL_KNOWLEDGE_MODE ??
+        env.SQL_KNOWLEDGE_MODE,
+    ),
+    lakebase: {
+      project,
+      branch,
+      instanceName,
+      configured: !!instanceName || !!(project && branch),
+    },
+  };
+}
+
+export function setLocalSqlKnowledgeMode(
+  mode: SqlKnowledgeMode,
+): LocalSqlKnowledgeConfig {
+  const settings = readSettings();
+  writeSettings({
+    ...settings,
+    sqlKnowledgeMode: normalizeSqlKnowledgeMode(mode),
+  });
+  return getLocalSqlKnowledgeConfig();
+}
+
+export function setLocalLakebaseConfig(config: {
+  project?: string | null;
+  branch?: string | null;
+  instanceName?: string | null;
+}): LocalSqlKnowledgeConfig {
+  const settings = readSettings();
+  writeSettings({
+    ...settings,
+    lakebaseProject:
+      config.project !== undefined
+        ? normalizeOptionalText(config.project)
+        : settings.lakebaseProject ?? null,
+    lakebaseBranch:
+      config.branch !== undefined
+        ? normalizeOptionalText(config.branch)
+        : settings.lakebaseBranch ?? null,
+    lakebaseInstanceName:
+      config.instanceName !== undefined
+        ? normalizeOptionalText(config.instanceName)
+        : settings.lakebaseInstanceName ?? null,
+  });
+  return getLocalSqlKnowledgeConfig();
 }

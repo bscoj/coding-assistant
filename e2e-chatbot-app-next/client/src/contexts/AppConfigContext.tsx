@@ -34,6 +34,7 @@ interface ProfileSummary {
 export type MemoryMode = 'lean' | 'work' | 'raw';
 export type ContextMode = 'personalized' | 'fresh';
 export type ResponseMode = 'direct' | 'teach';
+export type SqlKnowledgeMode = 'local' | 'lakebase' | 'hybrid';
 
 interface MemoryConfig {
   mode: MemoryMode;
@@ -50,6 +51,16 @@ interface ResponseConfig {
   mode: ResponseMode;
 }
 
+interface SqlKnowledgeConfig {
+  mode: SqlKnowledgeMode;
+  lakebase: {
+    project: string | null;
+    branch: string | null;
+    instanceName: string | null;
+    configured: boolean;
+  };
+}
+
 interface ConfigResponse {
   features: {
     chatHistory: boolean;
@@ -60,6 +71,7 @@ interface ConfigResponse {
   memory: MemoryConfig;
   context: ContextConfig;
   response: ResponseConfig;
+  sqlKnowledge: SqlKnowledgeConfig;
   profiles: {
     global: ProfileSummary;
     project: ProfileSummary | null;
@@ -83,6 +95,7 @@ interface AppConfigContextType {
   memory: MemoryConfig | undefined;
   context: ContextConfig | undefined;
   response: ResponseConfig | undefined;
+  sqlKnowledge: SqlKnowledgeConfig | undefined;
   profiles:
     | {
         global: ProfileSummary;
@@ -94,6 +107,12 @@ interface AppConfigContextType {
   setMemoryMode: (mode: MemoryMode) => Promise<void>;
   setContextMode: (mode: ContextMode) => Promise<void>;
   setResponseMode: (mode: ResponseMode) => Promise<void>;
+  setSqlKnowledgeMode: (mode: SqlKnowledgeMode) => Promise<void>;
+  setLakebaseConfig: (config: {
+    project?: string | null;
+    branch?: string | null;
+    instanceName?: string | null;
+  }) => Promise<void>;
   refreshConfig: () => Promise<void>;
 }
 
@@ -197,6 +216,52 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  async function setSqlKnowledgeMode(mode: SqlKnowledgeMode) {
+    const response = await fetchWithErrorHandlers('/api/config/sql-knowledge', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ mode }),
+    });
+    const payload = (await response.json()) as { sqlKnowledge: SqlKnowledgeConfig };
+    await mutate(
+      (current) =>
+        current
+          ? {
+              ...current,
+              sqlKnowledge: payload.sqlKnowledge,
+            }
+          : current,
+      false,
+    );
+  }
+
+  async function setLakebaseConfig(config: {
+    project?: string | null;
+    branch?: string | null;
+    instanceName?: string | null;
+  }) {
+    const response = await fetchWithErrorHandlers('/api/config/sql-knowledge', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ lakebase: config }),
+    });
+    const payload = (await response.json()) as { sqlKnowledge: SqlKnowledgeConfig };
+    await mutate(
+      (current) =>
+        current
+          ? {
+              ...current,
+              sqlKnowledge: payload.sqlKnowledge,
+            }
+          : current,
+      false,
+    );
+  }
+
   async function refreshConfig() {
     await mutate();
   }
@@ -215,12 +280,15 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     memory: data?.memory,
     context: data?.context,
     response: data?.response,
+    sqlKnowledge: data?.sqlKnowledge,
     profiles: data?.profiles,
     storage: data?.storage,
     setRepoPath,
     setMemoryMode,
     setContextMode,
     setResponseMode,
+    setSqlKnowledgeMode,
+    setLakebaseConfig,
     refreshConfig,
   };
 

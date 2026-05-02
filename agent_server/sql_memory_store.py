@@ -548,6 +548,20 @@ class ValidatedSqlStore:
                 raise KeyError(pattern_id)
         return self._row_to_pattern(row)
 
+    def list_patterns(self, workspace_root: str) -> list[dict[str, Any]]:
+        workspace_root = str(Path(workspace_root).resolve())
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM validated_sql_patterns
+                WHERE workspace_root = ?
+                ORDER BY updated_at DESC, name ASC
+                """,
+                (workspace_root,),
+            ).fetchall()
+        return [self._row_to_pattern(row) for row in rows]
+
     def search_patterns(
         self, workspace_root: str, query: str, limit: int = 8
     ) -> list[dict[str, Any]]:
@@ -822,6 +836,7 @@ class ValidatedSqlStore:
             "name": row["name"],
             "summary": row["summary"],
             "sql_text": row["sql_text"],
+            "sql_hash": row["sql_hash"] if "sql_hash" in row.keys() else "",
             "dialect": row["dialect"],
             "source_path": row["source_path"],
             "validation_notes": row["validation_notes"],

@@ -36,6 +36,16 @@ def is_windows() -> bool:
     return os.name == "nt"
 
 
+def configure_console_output() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            continue
+
+
 def npm_command() -> str:
     return "npm.cmd" if is_windows() else "npm"
 
@@ -355,6 +365,7 @@ class ProcessManager:
 
 
 def main():
+    configure_console_output()
     parser = argparse.ArgumentParser(
         description="Start agent frontend and backend",
         usage="%(prog)s [OPTIONS]\n\nAll options are passed through to start-server. "

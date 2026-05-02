@@ -14,12 +14,12 @@ from agent_server.filesystem_tools import (
     workspace_root,
 )
 from agent_server.memory_store import get_memory_store
+from agent_server.sql_knowledge_runtime import get_active_sql_store
 from agent_server.sql_memory_store import (
     extract_filter_candidates,
     extract_group_by_columns,
     extract_metric_candidates,
     extract_tables,
-    get_sql_store,
 )
 
 SQL_CODE_BLOCK_PATTERN = re.compile(
@@ -138,7 +138,7 @@ def _save_sql_pattern_payload(
     business_terms_csv: str = "",
     source_path: str | None = None,
 ) -> str:
-    payload = get_sql_store().save_pattern(
+    payload = get_active_sql_store().save_pattern(
         workspace_root=str(workspace_root()),
         name=name.strip() or "Validated SQL pattern",
         summary=summary.strip(),
@@ -158,7 +158,7 @@ def _save_sql_pattern_payload(
     sync_validated_pattern_into_analytics_context(payload)
     return json.dumps(
         {
-            "saved": get_sql_store().summarize_pattern(payload),
+            "saved": get_active_sql_store().summarize_pattern(payload),
             "guidance": "Use get_validated_sql_pattern(id) later if you need the full SQL text.",
         },
         indent=2,
@@ -256,7 +256,10 @@ def prepare_sql_knowledge_capture(
 @tool
 def validated_sql_store_overview(limit: int = 10) -> str:
     """Show validated SQL memory for the active SQL scope. With a selected repo this stays repo-specific; otherwise it uses the shared global SQL scope."""
-    payload = get_sql_store().overview(str(workspace_root()), limit=max(1, min(limit, 20)))
+    payload = get_active_sql_store().overview(
+        str(workspace_root()),
+        limit=max(1, min(limit, 20)),
+    )
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
@@ -268,7 +271,7 @@ def search_validated_sql_patterns(query: str, limit: int = 4) -> str:
         return "Provide a non-empty query."
     return _search_response(
         needle,
-        get_sql_store().search_patterns(
+        get_active_sql_store().search_patterns(
             str(workspace_root()),
             needle,
             limit=max(1, min(limit, 10)),
@@ -284,7 +287,7 @@ def search_validated_sql_by_table_or_join(query: str, limit: int = 4) -> str:
         return "Provide a non-empty table or join query."
     return _search_response(
         needle,
-        get_sql_store().search_by_table_or_join(
+        get_active_sql_store().search_by_table_or_join(
             str(workspace_root()),
             needle,
             limit=max(1, min(limit, 10)),
@@ -296,7 +299,10 @@ def search_validated_sql_by_table_or_join(query: str, limit: int = 4) -> str:
 def get_validated_sql_pattern(pattern_id: str) -> str:
     """Read one validated SQL pattern in full, including the saved SQL text, tables, joins, and notes."""
     try:
-        payload = get_sql_store().get_pattern(pattern_id.strip(), str(workspace_root()))
+        payload = get_active_sql_store().get_pattern(
+            pattern_id.strip(),
+            str(workspace_root()),
+        )
     except KeyError:
         return f"No validated SQL pattern found for id={pattern_id!r}."
     return json.dumps(payload, indent=2, ensure_ascii=True)

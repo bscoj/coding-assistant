@@ -6,16 +6,16 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
-from agent_server.analytics_context_store import (
-    get_analytics_context_store,
-    infer_table_layer,
-)
+from agent_server.analytics_context_store import infer_table_layer
 from agent_server.filesystem_tools import workspace_root
+from agent_server.sql_knowledge_runtime import (
+    get_active_analytics_context_store,
+    get_active_sql_store,
+)
 from agent_server.sql_memory_store import (
     extract_join_clauses,
     extract_join_pairs,
     extract_tables,
-    get_sql_store,
 )
 
 SELECT_STAR_PATTERN = re.compile(r"(?is)\bselect\s+\*")
@@ -31,7 +31,7 @@ def _current_workspace_root() -> str:
 
 
 def sync_validated_pattern_into_analytics_context(pattern: dict[str, object]) -> None:
-    store = get_analytics_context_store()
+    store = get_active_analytics_context_store()
     workspace = str(pattern.get("workspace_root") or _current_workspace_root())
     name = str(pattern.get("name") or "validated sql pattern").strip() or "validated sql pattern"
     summary = str(pattern.get("summary") or "").strip()
@@ -93,18 +93,18 @@ def sync_validated_pattern_into_analytics_context(pattern: dict[str, object]) ->
 
 
 def _known_tables_map() -> dict[str, dict]:
-    tables = get_analytics_context_store().list_tables(_current_workspace_root())
+    tables = get_active_analytics_context_store().list_tables(_current_workspace_root())
     return {table["table_name"].lower(): table for table in tables}
 
 
 def _known_joins() -> list[dict]:
-    return get_analytics_context_store().list_joins(_current_workspace_root())
+    return get_active_analytics_context_store().list_joins(_current_workspace_root())
 
 
 @tool
 def analytics_context_overview(limit: int = 10) -> str:
     """Show curated analytics context for the active SQL scope: trusted tables, join rules, metric definitions, and saved filter values."""
-    payload = get_analytics_context_store().overview(
+    payload = get_active_analytics_context_store().overview(
         _current_workspace_root(),
         limit=max(1, min(limit, 20)),
     )
@@ -119,7 +119,7 @@ def search_analytics_tables(query: str, limit: int = 8) -> str:
         return "Provide a non-empty query."
     payload = {
         "query": needle,
-        "results": get_analytics_context_store().search_tables(
+        "results": get_active_analytics_context_store().search_tables(
             _current_workspace_root(),
             needle,
             limit=max(1, min(limit, 20)),
@@ -136,7 +136,7 @@ def search_analytics_joins(query: str, limit: int = 8) -> str:
         return "Provide a non-empty query."
     payload = {
         "query": needle,
-        "results": get_analytics_context_store().search_joins(
+        "results": get_active_analytics_context_store().search_joins(
             _current_workspace_root(),
             needle,
             limit=max(1, min(limit, 20)),
@@ -153,7 +153,7 @@ def search_analytics_metrics(query: str, limit: int = 8) -> str:
         return "Provide a non-empty query."
     payload = {
         "query": needle,
-        "results": get_analytics_context_store().search_metrics(
+        "results": get_active_analytics_context_store().search_metrics(
             _current_workspace_root(),
             needle,
             limit=max(1, min(limit, 20)),
@@ -170,7 +170,7 @@ def search_analytics_filter_values(query: str, limit: int = 8) -> str:
         return "Provide a non-empty query."
     payload = {
         "query": needle,
-        "results": get_analytics_context_store().search_filter_values(
+        "results": get_active_analytics_context_store().search_filter_values(
             _current_workspace_root(),
             needle,
             limit=max(1, min(limit, 20)),
@@ -184,7 +184,7 @@ def suggest_filter_candidates_from_validated_sql(query: str = "", limit: int = 8
     """Mine likely exact-value filter candidates from validated SQL so you can promote repeated literals into curated business mappings."""
     payload = {
         "query": query.strip(),
-        "results": get_sql_store().suggest_filter_candidates(
+        "results": get_active_sql_store().suggest_filter_candidates(
             _current_workspace_root(),
             query.strip(),
             limit=max(1, min(limit, 20)),
@@ -209,7 +209,7 @@ def register_analytics_table(
     tags_csv: str = "",
 ) -> str:
     """Register curated knowledge about an analytics table for the active SQL scope. Use this only when the user explicitly wants to save trusted table context."""
-    payload = get_analytics_context_store().upsert_table_context(
+    payload = get_active_analytics_context_store().upsert_table_context(
         workspace_root=_current_workspace_root(),
         table_name=table_name,
         summary=summary,
@@ -236,7 +236,7 @@ def register_analytics_join(
     tags_csv: str = "",
 ) -> str:
     """Register a trusted analytics join rule for the active SQL scope. Use this only when the user explicitly wants to save known-good join guidance."""
-    payload = get_analytics_context_store().upsert_join_context(
+    payload = get_active_analytics_context_store().upsert_join_context(
         workspace_root=_current_workspace_root(),
         left_table=left_table,
         right_table=right_table,
@@ -262,7 +262,7 @@ def register_analytics_metric(
     tags_csv: str = "",
 ) -> str:
     """Register a trusted analytics metric definition for the active SQL scope. Use this only when the user explicitly wants to save known-good metric context."""
-    payload = get_analytics_context_store().upsert_metric_context(
+    payload = get_active_analytics_context_store().upsert_metric_context(
         workspace_root=_current_workspace_root(),
         metric_name=metric_name,
         definition=definition,
@@ -289,7 +289,7 @@ def register_analytics_filter_value(
     tags_csv: str = "",
 ) -> str:
     """Register a trusted filter mapping for the active SQL scope so plain-language concepts or abbreviations resolve to exact SQL values."""
-    payload = get_analytics_context_store().upsert_filter_value_context(
+    payload = get_active_analytics_context_store().upsert_filter_value_context(
         workspace_root=_current_workspace_root(),
         concept_name=concept_name,
         canonical_value=canonical_value,
@@ -350,8 +350,8 @@ def resolve_sql_task_context(task: str, limit: int = 4) -> str:
     if not needle:
         return "Provide a non-empty task description."
 
-    analytics_store = get_analytics_context_store()
-    sql_store = get_sql_store()
+    analytics_store = get_active_analytics_context_store()
+    sql_store = get_active_sql_store()
     workspace = _current_workspace_root()
     bounded_limit = max(1, min(limit, 8))
 
@@ -412,8 +412,8 @@ def suggest_sql_starting_points(task: str, limit: int = 6) -> str:
     if not needle:
         return "Provide a non-empty task description."
 
-    analytics_store = get_analytics_context_store()
-    sql_store = get_sql_store()
+    analytics_store = get_active_analytics_context_store()
+    sql_store = get_active_sql_store()
     workspace = _current_workspace_root()
 
     tables = analytics_store.search_tables(workspace, needle, limit=max(1, min(limit, 12)))
@@ -492,7 +492,7 @@ def _match_known_join(pair: dict[str, str], known_joins: list[dict]) -> dict | N
 
 def _candidate_validated_patterns(sql_text: str, tables: list[str], join_clauses: list[str]) -> list[dict]:
     workspace = _current_workspace_root()
-    store = get_sql_store()
+    store = get_active_sql_store()
     results_by_id: dict[str, dict] = {}
     search_terms = [*tables[:4], *join_clauses[:2]]
     if not search_terms:

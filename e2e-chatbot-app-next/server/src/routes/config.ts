@@ -19,13 +19,21 @@ import {
   getLocalContextConfig,
   getLocalMemoryConfig,
   getLocalResponseConfig,
+  getLocalSqlKnowledgeConfig,
+  setLocalLakebaseConfig,
   setLocalContextMode,
   setLocalMemoryMode,
   setLocalResponseMode,
+  setLocalSqlKnowledgeMode,
   type ContextMode,
   type MemoryMode,
   type ResponseMode,
+  type SqlKnowledgeMode,
 } from '../lib/local-app-settings';
+import {
+  formatLocalApiProxyUnavailableMessage,
+  getConfiguredAgentRouteUrl,
+} from '../lib/local-api-proxy';
 import { pickFolder } from '../lib/folder-picker';
 import {
   getLocalChatHistoryPath,
@@ -38,6 +46,7 @@ import {
 } from '../lib/shared-profile-store';
 
 export const configRouter: RouterType = Router();
+const NO_WORKSPACE_SELECTED_MARKER = '__NO_WORKSPACE_SELECTED__';
 
 /**
  * Extract OAuth scopes from a JWT token (without verification).
@@ -70,6 +79,7 @@ configRouter.get('/', async (req: Request, res: Response) => {
   const memory = getLocalMemoryConfig();
   const context = getLocalContextConfig();
   const responseMode = getLocalResponseConfig();
+  const sqlKnowledge = getLocalSqlKnowledgeConfig();
   const globalProfileSummary = getSharedProfileSummary('global', null);
   const projectProfileSummary = repo.path
     ? getSharedProfileSummary('project', repo.path)
@@ -99,6 +109,7 @@ configRouter.get('/', async (req: Request, res: Response) => {
     memory,
     context,
     response: responseMode,
+    sqlKnowledge,
     profiles: {
       global: globalProfileSummary,
       project: projectProfileSummary,
@@ -115,6 +126,89 @@ configRouter.get('/', async (req: Request, res: Response) => {
     },
   });
 });
+
+function buildSqlKnowledgeProxyHeaders(req: Request) {
+  const repo = getLocalRepoConfig();
+  const sqlKnowledge = getLocalSqlKnowledgeConfig();
+  return {
+    'Content-Type': 'application/json',
+    'x-codex-workspace-root': repo.path ?? NO_WORKSPACE_SELECTED_MARKER,
+    'x-codex-sql-knowledge-mode': sqlKnowledge.mode,
+    ...(sqlKnowledge.lakebase.project
+      ? { 'x-codex-lakebase-project': sqlKnowledge.lakebase.project }
+      : {}),
+    ...(sqlKnowledge.lakebase.branch
+      ? { 'x-codex-lakebase-branch': sqlKnowledge.lakebase.branch }
+      : {}),
+    ...(sqlKnowledge.lakebase.instanceName
+      ? { 'x-codex-lakebase-instance': sqlKnowledge.lakebase.instanceName }
+      : {}),
+    ...(req.headers['x-forwarded-access-token']
+      ? {
+          'x-forwarded-access-token': req.headers[
+            'x-forwarded-access-token'
+          ] as string,
+        }
+      : {}),
+    ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
+  };
+}
+
+async function proxySqlKnowledgeRequest(
+  req: Request,
+  res: Response,
+  pathname: string,
+  init: { method: string; body?: string },
+) {
+  const targetUrl = getConfiguredAgentRouteUrl(pathname);
+  if (!targetUrl) {
+    res.status(400).json({
+      code: 'bad_request:api',
+      cause:
+        'SQL knowledge sync requires API_PROXY to be configured so the local app can reach the agent backend.',
+    });
+    return;
+  }
+
+  try {
+    const agentResponse = await fetch(targetUrl, {
+      method: init.method,
+      headers: buildSqlKnowledgeProxyHeaders(req),
+      body: init.body,
+    });
+    const text = await agentResponse.text();
+    let payload: unknown = null;
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { message: text };
+      }
+    }
+    if (!agentResponse.ok) {
+      const cause =
+        typeof payload === 'object' &&
+        payload !== null &&
+        'detail' in payload &&
+        typeof (payload as { detail?: unknown }).detail === 'string'
+          ? (payload as { detail: string }).detail
+          : text || `Agent backend returned ${agentResponse.status}`;
+      res.status(agentResponse.status).json({
+        code: 'bad_request:api',
+        cause,
+      });
+      return;
+    }
+    res.status(agentResponse.status).json(payload ?? {});
+  } catch (error) {
+    const defaultMessage =
+      error instanceof Error ? error.message : String(error);
+    res.status(502).json({
+      code: 'bad_request:api',
+      cause: formatLocalApiProxyUnavailableMessage(defaultMessage),
+    });
+  }
+}
 
 configRouter.put('/context', async (req: Request, res: Response) => {
   const mode = req.body?.mode;
@@ -161,6 +255,52 @@ configRouter.put('/response', async (req: Request, res: Response) => {
   res.json({ response: responseMode });
 });
 
+configRouter.put('/sql-knowledge', async (req: Request, res: Response) => {
+  const mode = req.body?.mode;
+  const lakebase = req.body?.lakebase;
+
+  let sqlKnowledge = getLocalSqlKnowledgeConfig();
+
+  if (mode !== undefined) {
+    if (mode !== 'local' && mode !== 'lakebase' && mode !== 'hybrid') {
+      res.status(400).json({
+        code: 'bad_request:api',
+        cause: 'mode must be local, lakebase, or hybrid',
+      });
+      return;
+    }
+    sqlKnowledge = setLocalSqlKnowledgeMode(mode as SqlKnowledgeMode);
+  }
+
+  if (lakebase !== undefined) {
+    if (typeof lakebase !== 'object' || lakebase === null) {
+      res.status(400).json({
+        code: 'bad_request:api',
+        cause: 'lakebase must be an object',
+      });
+      return;
+    }
+    sqlKnowledge = setLocalLakebaseConfig({
+      project:
+        'project' in lakebase
+          ? ((lakebase as { project?: unknown }).project as string | null)
+          : undefined,
+      branch:
+        'branch' in lakebase
+          ? ((lakebase as { branch?: unknown }).branch as string | null)
+          : undefined,
+      instanceName:
+        'instanceName' in lakebase
+          ? ((lakebase as { instanceName?: unknown }).instanceName as
+              | string
+              | null)
+          : undefined,
+    });
+  }
+
+  res.json({ sqlKnowledge });
+});
+
 configRouter.put('/repo', async (req: Request, res: Response) => {
   const repoPath = req.body?.path;
 
@@ -187,6 +327,27 @@ configRouter.put('/repo', async (req: Request, res: Response) => {
       cause: error instanceof Error ? error.message : String(error),
     });
   }
+});
+
+configRouter.get('/sql-knowledge/status', async (req: Request, res: Response) => {
+  await proxySqlKnowledgeRequest(req, res, '/sql-knowledge/status', {
+    method: 'GET',
+  });
+});
+
+configRouter.post('/sql-knowledge/sync', async (req: Request, res: Response) => {
+  const direction = req.body?.direction;
+  if (direction !== 'push' && direction !== 'pull') {
+    res.status(400).json({
+      code: 'bad_request:api',
+      cause: 'direction must be push or pull',
+    });
+    return;
+  }
+  await proxySqlKnowledgeRequest(req, res, '/sql-knowledge/sync', {
+    method: 'POST',
+    body: JSON.stringify({ direction }),
+  });
 });
 
 configRouter.post('/repo/browse', async (_req: Request, res: Response) => {

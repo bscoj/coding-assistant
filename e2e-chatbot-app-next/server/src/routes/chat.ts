@@ -79,6 +79,7 @@ import {
   getLocalContextConfig,
   getLocalMemoryConfig,
   getLocalResponseConfig,
+  getLocalSqlKnowledgeConfig,
 } from '../lib/local-app-settings';
 
 export const chatRouter: RouterType = Router();
@@ -438,6 +439,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     const memory = getLocalMemoryConfig();
     const context = getLocalContextConfig();
     const responseMode = getLocalResponseConfig();
+    const sqlKnowledge = getLocalSqlKnowledgeConfig();
     const failFastForLocalApiProxy = shouldFailFastForLocalApiProxy();
     const requestHeaders = {
       [CONTEXT_HEADER_CONVERSATION_ID]: id,
@@ -445,6 +447,16 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       'x-codex-memory-mode': memory.mode,
       'x-codex-context-mode': context.mode,
       'x-codex-response-mode': responseMode.mode,
+      'x-codex-sql-knowledge-mode': sqlKnowledge.mode,
+      ...(sqlKnowledge.lakebase.project
+        ? { 'x-codex-lakebase-project': sqlKnowledge.lakebase.project }
+        : {}),
+      ...(sqlKnowledge.lakebase.branch
+        ? { 'x-codex-lakebase-branch': sqlKnowledge.lakebase.branch }
+        : {}),
+      ...(sqlKnowledge.lakebase.instanceName
+        ? { 'x-codex-lakebase-instance': sqlKnowledge.lakebase.instanceName }
+        : {}),
       ...(selectedChatModel
         ? { 'x-codex-model-endpoint': selectedChatModel }
         : {}),
@@ -857,12 +869,23 @@ chatRouter.post('/:id/approval', requireAuth, async (req: Request, res: Response
   const memory = getLocalMemoryConfig();
   const context = getLocalContextConfig();
   const responseMode = getLocalResponseConfig();
+  const sqlKnowledge = getLocalSqlKnowledgeConfig();
 
   const sharedHeaders = {
     'Content-Type': 'application/json',
     'x-codex-memory-mode': memory.mode,
     'x-codex-context-mode': context.mode,
     'x-codex-response-mode': responseMode.mode,
+    'x-codex-sql-knowledge-mode': sqlKnowledge.mode,
+    ...(sqlKnowledge.lakebase.project
+      ? { 'x-codex-lakebase-project': sqlKnowledge.lakebase.project }
+      : {}),
+    ...(sqlKnowledge.lakebase.branch
+      ? { 'x-codex-lakebase-branch': sqlKnowledge.lakebase.branch }
+      : {}),
+    ...(sqlKnowledge.lakebase.instanceName
+      ? { 'x-codex-lakebase-instance': sqlKnowledge.lakebase.instanceName }
+      : {}),
     'x-codex-workspace-root': repo.path ?? NO_WORKSPACE_SELECTED_MARKER,
     ...(req.headers['x-forwarded-access-token']
       ? {
