@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,8 @@ from agent_server.lakebase_sql_knowledge_store import (
     LakebaseDependencyError,
     LakebaseValidatedSqlStore,
     create_lakebase_client,
+    database_url_summary,
+    pg_env_summary,
 )
 from agent_server.sql_memory_store import get_sql_store
 
@@ -23,8 +26,9 @@ SQL_KNOWLEDGE_MODE_HEADER = "x-codex-sql-knowledge-mode"
 LAKEBASE_PROJECT_HEADER = "x-codex-lakebase-project"
 LAKEBASE_BRANCH_HEADER = "x-codex-lakebase-branch"
 LAKEBASE_INSTANCE_HEADER = "x-codex-lakebase-instance"
+LAKEBASE_DATABASE_URL_HEADER = "x-codex-lakebase-database-url"
 
-_LAKEBASE_CACHE_KEY: tuple[str | None, str | None, str | None, str | None] | None = None
+_LAKEBASE_CACHE_KEY: tuple[str | None, ...] | None = None
 _LAKEBASE_SQL_STORE: LakebaseValidatedSqlStore | None = None
 _LAKEBASE_ANALYTICS_STORE: LakebaseAnalyticsContextStore | None = None
 
@@ -32,13 +36,35 @@ _LAKEBASE_ANALYTICS_STORE: LakebaseAnalyticsContextStore | None = None
 @dataclass(frozen=True)
 class LakebaseConnectionConfig:
     profile: str | None
+    database_url: str | None
+    pg_host: str | None
+    pg_database: str | None
+    pg_user: str | None
+    pg_port: str | None
+    pg_sslmode: str | None
+    pg_password_hash: str | None
     instance_name: str | None
     project: str | None
     branch: str | None
 
     @property
     def configured(self) -> bool:
-        return bool(self.instance_name or (self.project and self.branch))
+        return bool(
+            self.database_url
+            or (self.pg_host and self.pg_database and self.pg_user)
+            or self.instance_name
+            or (self.project and self.branch)
+        )
+
+    @property
+    def kind(self) -> str:
+        if self.database_url:
+            return "database_url"
+        if self.pg_host or self.pg_database or self.pg_user:
+            return "pg_env"
+        if self.instance_name:
+            return "provisioned"
+        return "autoscaling"
 
 
 def normalize_sql_knowledge_mode(value: str | None) -> SqlKnowledgeMode:
@@ -61,8 +87,28 @@ def lakebase_connection_config(
     headers: dict[str, str] | None = None,
 ) -> LakebaseConnectionConfig:
     values = headers or get_request_headers()
+    pg_password = (
+        os.getenv("PGPASSWORD")
+        or os.getenv("LAKEBASE_DATABASE_PASSWORD")
+        or os.getenv("LAKEBASE_DATABASE_OAUTH_TOKEN")
+        or ""
+    ).strip()
     return LakebaseConnectionConfig(
         profile=(os.getenv("DATABRICKS_CONFIG_PROFILE") or "").strip() or None,
+        database_url=(
+            values.get(LAKEBASE_DATABASE_URL_HEADER) or os.getenv("LAKEBASE_DATABASE_URL") or ""
+        ).strip()
+        or None,
+        pg_host=(os.getenv("PGHOST") or "").strip() or None,
+        pg_database=(os.getenv("PGDATABASE") or "").strip() or None,
+        pg_user=(os.getenv("PGUSER") or "").strip() or None,
+        pg_port=(os.getenv("PGPORT") or "").strip() or None,
+        pg_sslmode=(os.getenv("PGSSLMODE") or "").strip() or None,
+        pg_password_hash=(
+            hashlib.sha256(pg_password.encode("utf-8")).hexdigest()
+            if pg_password
+            else None
+        ),
         instance_name=(values.get(LAKEBASE_INSTANCE_HEADER) or os.getenv("LAKEBASE_INSTANCE_NAME") or "").strip() or None,
         project=(values.get(LAKEBASE_PROJECT_HEADER) or os.getenv("LAKEBASE_AUTOSCALING_PROJECT") or "").strip() or None,
         branch=(values.get(LAKEBASE_BRANCH_HEADER) or os.getenv("LAKEBASE_AUTOSCALING_BRANCH") or "").strip() or None,
@@ -95,9 +141,27 @@ def _lakebase_stores(
     global _LAKEBASE_CACHE_KEY, _LAKEBASE_SQL_STORE, _LAKEBASE_ANALYTICS_STORE
     if not config.configured:
         raise ValueError(
-            "Lakebase SQL knowledge is not configured. Add an instance name or autoscaling project and branch."
+            "Lakebase SQL knowledge is not configured. Add LAKEBASE_DATABASE_URL, "
+            "PGHOST/PGDATABASE/PGUSER, an instance name, or autoscaling project and branch."
         )
-    cache_key = (config.profile, config.instance_name, config.project, config.branch)
+    database_url_hash = (
+        hashlib.sha256(config.database_url.encode("utf-8")).hexdigest()
+        if config.database_url
+        else None
+    )
+    cache_key = (
+        config.profile,
+        database_url_hash,
+        config.pg_host,
+        config.pg_database,
+        config.pg_user,
+        config.pg_port,
+        config.pg_sslmode,
+        config.pg_password_hash,
+        config.instance_name,
+        config.project,
+        config.branch,
+    )
     if (
         _LAKEBASE_CACHE_KEY != cache_key
         or _LAKEBASE_SQL_STORE is None
@@ -105,6 +169,7 @@ def _lakebase_stores(
     ):
         client = create_lakebase_client(
             profile=config.profile,
+            database_url=config.database_url,
             instance_name=config.instance_name,
             project=config.project,
             branch=config.branch,
@@ -465,6 +530,7 @@ def sql_knowledge_runtime_config(
         "lakebase_instance_name": config.instance_name,
         "lakebase_project": config.project,
         "lakebase_branch": config.branch,
+        "lakebase_connection_kind": config.kind,
         "lakebase_configured": config.configured,
         "lakebase_available": available,
         "lakebase_error": lakebase_error,
@@ -659,6 +725,22 @@ def sync_sql_knowledge(
 
 
 def lakebase_connection_summary(config: LakebaseConnectionConfig) -> dict[str, Any]:
+    if config.database_url:
+        summary = database_url_summary(config.database_url) or {"kind": "database_url"}
+        summary["pool_timeout_seconds"] = (
+            os.getenv("LAKEBASE_POOL_TIMEOUT_SECONDS") or ""
+        ).strip() or "90"
+        summary["pool_min_size"] = (os.getenv("LAKEBASE_POOL_MIN_SIZE") or "").strip() or "0"
+        return summary
+
+    if config.pg_host or config.pg_database or config.pg_user:
+        summary = pg_env_summary() or {"kind": "pg_env"}
+        summary["pool_timeout_seconds"] = (
+            os.getenv("LAKEBASE_POOL_TIMEOUT_SECONDS") or ""
+        ).strip() or "90"
+        summary["pool_min_size"] = (os.getenv("LAKEBASE_POOL_MIN_SIZE") or "").strip() or "0"
+        return summary
+
     pool_timeout = (os.getenv("LAKEBASE_POOL_TIMEOUT_SECONDS") or "").strip() or (
         "90" if config.project or config.branch else "30"
     )

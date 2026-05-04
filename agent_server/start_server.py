@@ -15,6 +15,7 @@ from agent_server.filesystem_tools import configured_workspace_root, writes_enab
 from agent_server.memory_pipeline import memory_runtime_config  # noqa: E402
 from agent_server.sql_knowledge_runtime import (  # noqa: E402
     LAKEBASE_BRANCH_HEADER,
+    LAKEBASE_DATABASE_URL_HEADER,
     LAKEBASE_INSTANCE_HEADER,
     LAKEBASE_PROJECT_HEADER,
     SQL_KNOWLEDGE_MODE_HEADER,
@@ -72,6 +73,7 @@ def _print_sql_knowledge_banner() -> None:
     print(f"  effective_mode: {config['effective_mode']}")
     print(f"  databricks_profile: {config['profile'] or '(default)'}")
     print(f"  lakebase_configured: {config['lakebase_configured']}")
+    print(f"  lakebase_connection_kind: {config['lakebase_connection_kind']}")
     if config["lakebase_project"] or config["lakebase_branch"]:
         print(
             "  lakebase_autoscaling: "
@@ -95,6 +97,7 @@ setup_mlflow_git_based_version_tracking()
 
 def _sql_knowledge_headers(
     sql_knowledge_mode: str | None,
+    lakebase_database_url: str | None,
     lakebase_project: str | None,
     lakebase_branch: str | None,
     lakebase_instance: str | None,
@@ -102,6 +105,8 @@ def _sql_knowledge_headers(
     headers: dict[str, str] = {}
     if sql_knowledge_mode:
         headers[SQL_KNOWLEDGE_MODE_HEADER] = sql_knowledge_mode
+    if lakebase_database_url:
+        headers[LAKEBASE_DATABASE_URL_HEADER] = lakebase_database_url
     if lakebase_project:
         headers[LAKEBASE_PROJECT_HEADER] = lakebase_project
     if lakebase_branch:
@@ -118,12 +123,17 @@ def get_sql_knowledge_status(
         default=None,
         alias=SQL_KNOWLEDGE_MODE_HEADER,
     ),
+    lakebase_database_url: str | None = Header(
+        default=None,
+        alias=LAKEBASE_DATABASE_URL_HEADER,
+    ),
     lakebase_project: str | None = Header(default=None, alias=LAKEBASE_PROJECT_HEADER),
     lakebase_branch: str | None = Header(default=None, alias=LAKEBASE_BRANCH_HEADER),
     lakebase_instance: str | None = Header(default=None, alias=LAKEBASE_INSTANCE_HEADER),
 ):
     headers = _sql_knowledge_headers(
         sql_knowledge_mode,
+        lakebase_database_url,
         lakebase_project,
         lakebase_branch,
         lakebase_instance,
@@ -145,6 +155,10 @@ def post_sql_knowledge_sync(
         default=None,
         alias=SQL_KNOWLEDGE_MODE_HEADER,
     ),
+    lakebase_database_url: str | None = Header(
+        default=None,
+        alias=LAKEBASE_DATABASE_URL_HEADER,
+    ),
     lakebase_project: str | None = Header(default=None, alias=LAKEBASE_PROJECT_HEADER),
     lakebase_branch: str | None = Header(default=None, alias=LAKEBASE_BRANCH_HEADER),
     lakebase_instance: str | None = Header(default=None, alias=LAKEBASE_INSTANCE_HEADER),
@@ -155,6 +169,7 @@ def post_sql_knowledge_sync(
 
     headers = _sql_knowledge_headers(
         sql_knowledge_mode,
+        lakebase_database_url,
         lakebase_project,
         lakebase_branch,
         lakebase_instance,

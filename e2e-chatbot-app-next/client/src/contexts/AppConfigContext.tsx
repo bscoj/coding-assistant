@@ -54,6 +54,7 @@ interface ResponseConfig {
 interface SqlKnowledgeConfig {
   mode: SqlKnowledgeMode;
   lakebase: {
+    connectionString: string | null;
     project: string | null;
     branch: string | null;
     instanceName: string | null;
@@ -109,6 +110,7 @@ interface AppConfigContextType {
   setResponseMode: (mode: ResponseMode) => Promise<void>;
   setSqlKnowledgeMode: (mode: SqlKnowledgeMode) => Promise<void>;
   setLakebaseConfig: (config: {
+    connectionString?: string | null;
     project?: string | null;
     branch?: string | null;
     instanceName?: string | null;
@@ -238,6 +240,7 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
   }
 
   async function setLakebaseConfig(config: {
+    connectionString?: string | null;
     project?: string | null;
     branch?: string | null;
     instanceName?: string | null;

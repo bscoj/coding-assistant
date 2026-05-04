@@ -86,6 +86,11 @@ type SqlKnowledgeStatus = {
     error: string | null;
     connection?: {
       kind?: string;
+      host?: string | null;
+      database?: string | null;
+      role?: string | null;
+      has_password?: boolean;
+      sslmode_required?: boolean;
       pool_timeout_seconds?: string;
       pool_min_size?: string;
       branch_parent?: string;
@@ -611,6 +616,7 @@ export function ProfileSheet({
   const [sqlStatusLoading, setSqlStatusLoading] = useState(false);
   const [sqlStatusError, setSqlStatusError] = useState<string | null>(null);
   const [sqlSyncDirection, setSqlSyncDirection] = useState<'push' | 'pull' | null>(null);
+  const [lakebaseConnectionStringDraft, setLakebaseConnectionStringDraft] = useState('');
   const [lakebaseProjectDraft, setLakebaseProjectDraft] = useState('');
   const [lakebaseBranchDraft, setLakebaseBranchDraft] = useState('');
   const [lakebaseInstanceDraft, setLakebaseInstanceDraft] = useState('');
@@ -669,11 +675,13 @@ export function ProfileSheet({
   }, [open, scope, canUseProjectScope, refreshConfig]);
 
   useEffect(() => {
+    setLakebaseConnectionStringDraft(sqlKnowledge?.lakebase.connectionString ?? '');
     setLakebaseProjectDraft(sqlKnowledge?.lakebase.project ?? '');
     setLakebaseBranchDraft(sqlKnowledge?.lakebase.branch ?? '');
     setLakebaseInstanceDraft(sqlKnowledge?.lakebase.instanceName ?? '');
   }, [
     sqlKnowledge?.lakebase.branch,
+    sqlKnowledge?.lakebase.connectionString,
     sqlKnowledge?.lakebase.instanceName,
     sqlKnowledge?.lakebase.project,
   ]);
@@ -728,6 +736,7 @@ export function ProfileSheet({
   }, [activeEntries.length, hiddenEntries.length, learnedEntries.length, manualEntries.length]);
 
   const lakebaseDraftDirty =
+    lakebaseConnectionStringDraft !== (sqlKnowledge?.lakebase.connectionString ?? '') ||
     lakebaseProjectDraft !== (sqlKnowledge?.lakebase.project ?? '') ||
     lakebaseBranchDraft !== (sqlKnowledge?.lakebase.branch ?? '') ||
     lakebaseInstanceDraft !== (sqlKnowledge?.lakebase.instanceName ?? '');
@@ -902,6 +911,7 @@ export function ProfileSheet({
     setSqlStatusError(null);
     try {
       await setLakebaseConfig({
+        connectionString: lakebaseConnectionStringDraft,
         project: lakebaseProjectDraft,
         branch: lakebaseBranchDraft,
         instanceName: lakebaseInstanceDraft,
@@ -1382,6 +1392,15 @@ export function ProfileSheet({
                       ))}
                     </div>
 
+                    <Input
+                      value={lakebaseConnectionStringDraft}
+                      onChange={(event) =>
+                        setLakebaseConnectionStringDraft(event.target.value)
+                      }
+                      placeholder="psql 'postgresql://role@host/database?sslmode=require'"
+                      className="border-white/[0.08] bg-white/[0.04] text-white placeholder:text-white/35"
+                    />
+
                     <div className="grid gap-3 sm:grid-cols-3">
                       <Input
                         value={lakebaseProjectDraft}
@@ -1473,6 +1492,12 @@ export function ProfileSheet({
                         timeout {sqlStatus.lakebase.connection.pool_timeout_seconds ?? '30'}s
                         {sqlStatus.lakebase.connection.branch_parent
                           ? ` - ${sqlStatus.lakebase.connection.branch_parent}`
+                          : ''}
+                        {sqlStatus.lakebase.connection.host
+                          ? ` - ${sqlStatus.lakebase.connection.host}`
+                          : ''}
+                        {sqlStatus.lakebase.connection.database
+                          ? `/${sqlStatus.lakebase.connection.database}`
                           : ''}
                       </p>
                     ) : null}

@@ -134,6 +134,9 @@ function buildSqlKnowledgeProxyHeaders(req: Request) {
     'Content-Type': 'application/json',
     'x-codex-workspace-root': repo.path ?? NO_WORKSPACE_SELECTED_MARKER,
     'x-codex-sql-knowledge-mode': sqlKnowledge.mode,
+    ...(sqlKnowledge.lakebase.connectionString
+      ? { 'x-codex-lakebase-database-url': sqlKnowledge.lakebase.connectionString }
+      : {}),
     ...(sqlKnowledge.lakebase.project
       ? { 'x-codex-lakebase-project': sqlKnowledge.lakebase.project }
       : {}),
@@ -281,6 +284,12 @@ configRouter.put('/sql-knowledge', async (req: Request, res: Response) => {
       return;
     }
     sqlKnowledge = setLocalLakebaseConfig({
+      connectionString:
+        'connectionString' in lakebase
+          ? ((lakebase as { connectionString?: unknown }).connectionString as
+              | string
+              | null)
+          : undefined,
       project:
         'project' in lakebase
           ? ((lakebase as { project?: unknown }).project as string | null)

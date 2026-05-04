@@ -26,6 +26,7 @@ export interface LocalResponseConfig {
 export interface LocalSqlKnowledgeConfig {
   mode: SqlKnowledgeMode;
   lakebase: {
+    connectionString: string | null;
     project: string | null;
     branch: string | null;
     instanceName: string | null;
@@ -38,6 +39,7 @@ interface LocalAppSettings {
   contextMode?: ContextMode;
   responseMode?: ResponseMode;
   sqlKnowledgeMode?: SqlKnowledgeMode;
+  lakebaseConnectionString?: string | null;
   lakebaseProject?: string | null;
   lakebaseBranch?: string | null;
   lakebaseInstanceName?: string | null;
@@ -194,6 +196,11 @@ export function setLocalResponseMode(mode: ResponseMode): LocalResponseConfig {
 export function getLocalSqlKnowledgeConfig(): LocalSqlKnowledgeConfig {
   const env = envValues();
   const settings = readSettings();
+  const connectionString = normalizeOptionalText(
+    settings.lakebaseConnectionString ??
+      process.env.LOCAL_LAKEBASE_DATABASE_URL ??
+      env.LAKEBASE_DATABASE_URL,
+  );
   const project = normalizeOptionalText(
     settings.lakebaseProject ??
       process.env.LOCAL_LAKEBASE_PROJECT ??
@@ -209,6 +216,11 @@ export function getLocalSqlKnowledgeConfig(): LocalSqlKnowledgeConfig {
       process.env.LOCAL_LAKEBASE_INSTANCE_NAME ??
       env.LAKEBASE_INSTANCE_NAME,
   );
+  const databaseUrlConfigured = !!connectionString;
+  const pgEnvConfigured =
+    !!normalizeOptionalText(env.PGHOST ?? process.env.PGHOST) &&
+    !!normalizeOptionalText(env.PGDATABASE ?? process.env.PGDATABASE) &&
+    !!normalizeOptionalText(env.PGUSER ?? process.env.PGUSER);
 
   return {
     mode: normalizeSqlKnowledgeMode(
@@ -217,10 +229,12 @@ export function getLocalSqlKnowledgeConfig(): LocalSqlKnowledgeConfig {
         env.SQL_KNOWLEDGE_MODE,
     ),
     lakebase: {
+      connectionString,
       project,
       branch,
       instanceName,
-      configured: !!instanceName || !!(project && branch),
+      configured:
+        databaseUrlConfigured || pgEnvConfigured || !!instanceName || !!(project && branch),
     },
   };
 }
@@ -237,6 +251,7 @@ export function setLocalSqlKnowledgeMode(
 }
 
 export function setLocalLakebaseConfig(config: {
+  connectionString?: string | null;
   project?: string | null;
   branch?: string | null;
   instanceName?: string | null;
@@ -244,6 +259,10 @@ export function setLocalLakebaseConfig(config: {
   const settings = readSettings();
   writeSettings({
     ...settings,
+    lakebaseConnectionString:
+      config.connectionString !== undefined
+        ? normalizeOptionalText(config.connectionString)
+        : settings.lakebaseConnectionString ?? null,
     lakebaseProject:
       config.project !== undefined
         ? normalizeOptionalText(config.project)

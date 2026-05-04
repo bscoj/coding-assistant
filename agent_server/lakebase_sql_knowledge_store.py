@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from databricks.sdk import WorkspaceClient
 
@@ -75,13 +76,176 @@ def _is_branch_resource_path(branch: str | None) -> bool:
     return bool(branch and branch.startswith("projects/") and "/branches/" in branch)
 
 
+def _extract_postgres_conninfo(raw_value: str | None) -> str | None:
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+    if value.startswith("psql "):
+        value = value[5:].strip()
+    if (
+        (value.startswith("'") and value.endswith("'"))
+        or (value.startswith('"') and value.endswith('"'))
+    ):
+        value = value[1:-1].strip()
+    if value.startswith("postgresql://") or value.startswith("postgres://"):
+        return value
+    return raw_value
+
+
+class DirectPostgresLakebaseClient:
+    def __init__(self, conninfo: str, password_provider: Callable[[], str] | None = None):
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+        except ImportError as exc:
+            raise LakebaseDependencyError(lakebase_dependency_error_message()) from exc
+
+        password = (
+            os.getenv("LAKEBASE_DATABASE_PASSWORD")
+            or os.getenv("LAKEBASE_DATABASE_OAUTH_TOKEN")
+            or os.getenv("PGPASSWORD")
+            or ""
+        ).strip()
+        kwargs: dict[str, Any] = {
+            "autocommit": True,
+            "row_factory": dict_row,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        }
+        if password:
+            kwargs["password"] = password
+
+        token_provider = password_provider
+
+        class RotatingConnection(psycopg.Connection):
+            @classmethod
+            def connect(cls, conninfo: str = "", **connect_kwargs: Any):
+                if token_provider is not None:
+                    connect_kwargs["password"] = token_provider()
+                return super().connect(conninfo, **connect_kwargs)
+
+        self._pool = ConnectionPool(
+            conninfo=conninfo,
+            kwargs=kwargs,
+            min_size=_env_int("LAKEBASE_POOL_MIN_SIZE", 0),
+            max_size=_env_int("LAKEBASE_POOL_MAX_SIZE", 4),
+            timeout=_env_float("LAKEBASE_POOL_TIMEOUT_SECONDS", 90.0),
+            open=True,
+            connection_class=RotatingConnection,
+        )
+        self._psycopg = psycopg
+
+    def execute(
+        self,
+        sql_text: str,
+        params: tuple[Any, ...] | dict[str, Any] | None = None,
+    ) -> list[Any] | None:
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql_text, params)
+                if cur.description:
+                    return cur.fetchall()
+                return None
+
+    def close(self) -> None:
+        self._pool.close()
+
+
+def direct_lakebase_conninfo(database_url: str | None) -> str | None:
+    if database_url:
+        return _extract_postgres_conninfo(database_url)
+
+    host = (os.getenv("PGHOST") or "").strip()
+    database = (os.getenv("PGDATABASE") or "").strip()
+    user = (os.getenv("PGUSER") or "").strip()
+    if not host or not database or not user:
+        return None
+
+    try:
+        from psycopg.conninfo import make_conninfo
+    except ImportError as exc:
+        raise LakebaseDependencyError(lakebase_dependency_error_message()) from exc
+
+    password = (
+        os.getenv("PGPASSWORD")
+        or os.getenv("LAKEBASE_DATABASE_PASSWORD")
+        or os.getenv("LAKEBASE_DATABASE_OAUTH_TOKEN")
+        or ""
+    ).strip()
+    kwargs: dict[str, Any] = {
+        "host": host,
+        "dbname": database,
+        "user": user,
+        "port": (os.getenv("PGPORT") or "5432").strip() or "5432",
+        "sslmode": (os.getenv("PGSSLMODE") or "require").strip() or "require",
+    }
+    if password:
+        kwargs["password"] = password
+    return make_conninfo("", **kwargs)
+
+
+def database_url_summary(database_url: str | None) -> dict[str, Any] | None:
+    conninfo = _extract_postgres_conninfo(database_url)
+    if not conninfo:
+        return None
+    try:
+        parsed = urlsplit(conninfo)
+    except ValueError:
+        return {"kind": "database_url"}
+    database = parsed.path.lstrip("/") or None
+    return {
+        "kind": "database_url",
+        "host": parsed.hostname,
+        "database": database,
+        "role": parsed.username,
+        "has_password": parsed.password is not None
+        or bool((os.getenv("LAKEBASE_DATABASE_PASSWORD") or "").strip())
+        or bool((os.getenv("LAKEBASE_DATABASE_OAUTH_TOKEN") or "").strip())
+        or bool((os.getenv("PGPASSWORD") or "").strip()),
+        "sslmode_required": "sslmode=require" in parsed.query.lower(),
+    }
+
+
+def pg_env_summary() -> dict[str, Any] | None:
+    host = (os.getenv("PGHOST") or "").strip()
+    database = (os.getenv("PGDATABASE") or "").strip()
+    user = (os.getenv("PGUSER") or "").strip()
+    if not host and not database and not user:
+        return None
+    return {
+        "kind": "pg_env",
+        "host": host or None,
+        "database": database or None,
+        "role": user or None,
+        "port": (os.getenv("PGPORT") or "5432").strip() or "5432",
+        "has_password": bool((os.getenv("PGPASSWORD") or "").strip())
+        or bool((os.getenv("LAKEBASE_DATABASE_PASSWORD") or "").strip())
+        or bool((os.getenv("LAKEBASE_DATABASE_OAUTH_TOKEN") or "").strip()),
+        "sslmode_required": ((os.getenv("PGSSLMODE") or "require").strip().lower() == "require"),
+    }
+
+
 def create_lakebase_client(
     *,
     profile: str | None,
+    database_url: str | None,
     instance_name: str | None,
     project: str | None,
     branch: str | None,
 ):
+    conninfo = direct_lakebase_conninfo(database_url)
+    if conninfo:
+        password_provider = _database_url_password_provider(
+            profile=profile,
+            database_url=conninfo,
+            project=project,
+            branch=branch,
+        )
+        return DirectPostgresLakebaseClient(conninfo, password_provider=password_provider)
+
     LakebaseClient = _load_lakebase_client_class()
     workspace_client = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
     kwargs: dict[str, Any] = {"workspace_client": workspace_client}
@@ -99,6 +263,85 @@ def create_lakebase_client(
         kwargs["max_size"] = _env_int("LAKEBASE_POOL_MAX_SIZE", 4)
         kwargs["timeout"] = _env_float("LAKEBASE_POOL_TIMEOUT_SECONDS", 90.0)
     return LakebaseClient(**kwargs)
+
+
+def _database_url_password_provider(
+    *,
+    profile: str | None,
+    database_url: str,
+    project: str | None,
+    branch: str | None,
+) -> Callable[[], str] | None:
+    if (
+        (os.getenv("LAKEBASE_DATABASE_PASSWORD") or "").strip()
+        or (os.getenv("LAKEBASE_DATABASE_OAUTH_TOKEN") or "").strip()
+        or (os.getenv("PGPASSWORD") or "").strip()
+    ):
+        return None
+    try:
+        parsed = urlsplit(database_url)
+    except ValueError:
+        return None
+    if parsed.password:
+        return None
+    if not project or not branch:
+        raise ValueError(
+            "The pasted Lakebase psql string does not include a password. Keep autoscaling "
+            "project and branch configured so the app can mint an OAuth database credential, "
+            "or use a native Postgres role connection string that includes a password."
+        )
+
+    workspace_client = WorkspaceClient(profile=profile) if profile else WorkspaceClient()
+    endpoint_name = _resolve_autoscaling_endpoint_for_host(
+        workspace_client=workspace_client,
+        project=project,
+        branch=branch,
+        target_host=parsed.hostname,
+    )
+
+    def _mint_token() -> str:
+        credential = workspace_client.postgres.generate_database_credential(
+            endpoint=endpoint_name,
+        )
+        token = getattr(credential, "token", None)
+        if not token:
+            raise RuntimeError("Failed to generate Lakebase database credential.")
+        return token
+
+    return _mint_token
+
+
+def _resolve_autoscaling_endpoint_for_host(
+    *,
+    workspace_client: WorkspaceClient,
+    project: str,
+    branch: str,
+    target_host: str | None,
+) -> str:
+    branch_parent = branch if _is_branch_resource_path(branch) else f"projects/{project}/branches/{branch}"
+    endpoints = list(workspace_client.postgres.list_endpoints(parent=branch_parent))
+    read_write_endpoints: list[Any] = []
+    for endpoint in endpoints:
+        status = getattr(endpoint, "status", None)
+        endpoint_type = getattr(status, "endpoint_type", None)
+        if endpoint_type and "READ_WRITE" in str(endpoint_type):
+            read_write_endpoints.append(endpoint)
+
+    candidates = read_write_endpoints or endpoints
+    for endpoint in candidates:
+        status = getattr(endpoint, "status", None)
+        hosts = getattr(status, "hosts", None)
+        host = getattr(hosts, "host", None) if hosts else None
+        if target_host and host == target_host and getattr(endpoint, "name", None):
+            return endpoint.name
+
+    if len(candidates) == 1 and getattr(candidates[0], "name", None):
+        return candidates[0].name
+
+    raise ValueError(
+        "Could not match the pasted Lakebase psql host to an autoscaling endpoint. "
+        "Verify the saved project and branch match the psql string's branch and compute."
+    )
 
 
 class _LakebaseStoreBase:
