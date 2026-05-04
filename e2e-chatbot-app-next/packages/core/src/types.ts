@@ -11,6 +11,12 @@ export type CustomUIDataTypes = {
   error: string;
   usage: LanguageModelUsage;
   memoryStatus: string;
+  agentFocus: {
+    message?: string;
+    taskKind?: string;
+    recommendedFiles?: string[];
+    recipe?: string[];
+  };
   traceId: string | null;
   title: string;
 };

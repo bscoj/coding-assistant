@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
+import uuid
 from pathlib import Path
 from typing import Any
-import uuid
 
 from databricks.sdk import WorkspaceClient
 
@@ -50,6 +51,30 @@ def _load_lakebase_client_class():
     return LakebaseClient
 
 
+def _env_float(name: str, default: float) -> float:
+    raw_value = (os.getenv(name) or "").strip()
+    if not raw_value:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw_value = (os.getenv(name) or "").strip()
+    if not raw_value:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default
+
+
+def _is_branch_resource_path(branch: str | None) -> bool:
+    return bool(branch and branch.startswith("projects/") and "/branches/" in branch)
+
+
 def create_lakebase_client(
     *,
     profile: str | None,
@@ -67,8 +92,12 @@ def create_lakebase_client(
             raise ValueError(
                 "Lakebase configuration is incomplete. Provide instance_name or both project and branch."
             )
-        kwargs["project"] = project
+        if not _is_branch_resource_path(branch):
+            kwargs["project"] = project
         kwargs["branch"] = branch
+        kwargs["min_size"] = _env_int("LAKEBASE_POOL_MIN_SIZE", 0)
+        kwargs["max_size"] = _env_int("LAKEBASE_POOL_MAX_SIZE", 4)
+        kwargs["timeout"] = _env_float("LAKEBASE_POOL_TIMEOUT_SECONDS", 90.0)
     return LakebaseClient(**kwargs)
 
 

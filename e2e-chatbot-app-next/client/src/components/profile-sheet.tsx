@@ -84,6 +84,12 @@ type SqlKnowledgeStatus = {
     branch: string | null;
     available: boolean;
     error: string | null;
+    connection?: {
+      kind?: string;
+      pool_timeout_seconds?: string;
+      pool_min_size?: string;
+      branch_parent?: string;
+    };
     counts?: SqlKnowledgeCounts;
   };
 };
@@ -1461,14 +1467,24 @@ export function ProfileSheet({
                       />
                     </div>
 
+                    {sqlStatus?.lakebase.connection ? (
+                      <p className="text-xs leading-5 text-white/45">
+                        Lakebase {sqlStatus.lakebase.connection.kind ?? 'connection'} -
+                        timeout {sqlStatus.lakebase.connection.pool_timeout_seconds ?? '30'}s
+                        {sqlStatus.lakebase.connection.branch_parent
+                          ? ` - ${sqlStatus.lakebase.connection.branch_parent}`
+                          : ''}
+                      </p>
+                    ) : null}
+
                     {sqlStatusError ? (
-                      <div className="rounded-2xl border border-red-300/12 bg-red-300/[0.05] px-3 py-3 text-sm text-red-100">
+                      <div className="whitespace-pre-line rounded-2xl border border-red-300/12 bg-red-300/[0.05] px-3 py-3 text-sm text-red-100">
                         {sqlStatusError}
                       </div>
                     ) : null}
 
                     {sqlStatus?.lakebase.error ? (
-                      <div className="rounded-2xl border border-amber-300/12 bg-amber-300/[0.05] px-3 py-3 text-sm text-amber-100">
+                      <div className="whitespace-pre-line rounded-2xl border border-amber-300/12 bg-amber-300/[0.05] px-3 py-3 text-sm text-amber-100">
                         {sqlStatus.lakebase.error}
                       </div>
                     ) : null}

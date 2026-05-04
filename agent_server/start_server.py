@@ -19,6 +19,7 @@ from agent_server.sql_knowledge_runtime import (  # noqa: E402
     LAKEBASE_PROJECT_HEADER,
     SQL_KNOWLEDGE_MODE_HEADER,
     lakebase_connection_config,
+    lakebase_user_facing_error,
     normalize_sql_knowledge_mode,
     sql_knowledge_runtime_config,
     sql_knowledge_status,
@@ -158,14 +159,18 @@ def post_sql_knowledge_sync(
         lakebase_branch,
         lakebase_instance,
     )
+    config = lakebase_connection_config(headers)
     try:
         return sync_sql_knowledge(
             direction=direction,  # type: ignore[arg-type]
             workspace_root=workspace_root or "",
-            config=lakebase_connection_config(headers),
+            config=config,
         )
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=lakebase_user_facing_error(exc, config=config),
+        ) from exc
 
 
 def main():

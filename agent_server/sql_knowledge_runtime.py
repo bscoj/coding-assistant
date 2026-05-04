@@ -109,8 +109,16 @@ def _lakebase_stores(
             project=config.project,
             branch=config.branch,
         )
-        _LAKEBASE_SQL_STORE = LakebaseValidatedSqlStore(client)
-        _LAKEBASE_ANALYTICS_STORE = LakebaseAnalyticsContextStore(client)
+        try:
+            sql_store = LakebaseValidatedSqlStore(client)
+            analytics_store = LakebaseAnalyticsContextStore(client)
+        except Exception:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+            raise
+        _LAKEBASE_SQL_STORE = sql_store
+        _LAKEBASE_ANALYTICS_STORE = analytics_store
         _LAKEBASE_CACHE_KEY = cache_key
     return _LAKEBASE_SQL_STORE, _LAKEBASE_ANALYTICS_STORE
 
@@ -446,14 +454,8 @@ def sql_knowledge_runtime_config(
         else requested_sql_knowledge_mode()
     )
     config = lakebase_connection_config(headers)
-    try:
-        available = config.configured
-        if available:
-            _lakebase_stores(config)
-        lakebase_error: str | None = None
-    except Exception as exc:
-        available = False
-        lakebase_error = str(exc)
+    available = config.configured
+    lakebase_error: str | None = None
     return {
         "requested_mode": requested_mode,
         "effective_mode": effective_sql_knowledge_mode(
@@ -490,6 +492,7 @@ def sql_knowledge_status(
             "branch": config.branch,
             "available": False,
             "error": None,
+            "connection": lakebase_connection_summary(config) if config.configured else None,
         },
         "local": _store_counts(local_sql_store, local_analytics_store, normalized_workspace_root),
     }
@@ -507,7 +510,7 @@ def sql_knowledge_status(
             lakebase_sql_store, lakebase_analytics_store, normalized_workspace_root
         )
     except Exception as exc:
-        payload["lakebase"]["error"] = str(exc)
+        payload["lakebase"]["error"] = lakebase_user_facing_error(exc, config=config)
         if requested_mode == "hybrid":
             payload["effective_mode"] = "local"
         return payload
@@ -655,7 +658,50 @@ def sync_sql_knowledge(
     }
 
 
-def lakebase_user_facing_error(error: Exception) -> str:
+def lakebase_connection_summary(config: LakebaseConnectionConfig) -> dict[str, Any]:
+    pool_timeout = (os.getenv("LAKEBASE_POOL_TIMEOUT_SECONDS") or "").strip() or (
+        "90" if config.project or config.branch else "30"
+    )
+    pool_min_size = (os.getenv("LAKEBASE_POOL_MIN_SIZE") or "").strip() or (
+        "0" if config.project or config.branch else "1"
+    )
+    summary: dict[str, Any] = {
+        "kind": "provisioned" if config.instance_name else "autoscaling",
+        "pool_timeout_seconds": pool_timeout,
+        "pool_min_size": pool_min_size,
+    }
+    if config.branch:
+        if config.branch.startswith("projects/") and "/branches/" in config.branch:
+            summary["branch_parent"] = config.branch
+        else:
+            summary["branch_parent"] = f"projects/{config.project}/branches/{config.branch}"
+    return summary
+
+
+def lakebase_user_facing_error(
+    error: Exception,
+    *,
+    config: LakebaseConnectionConfig | None = None,
+) -> str:
     if isinstance(error, LakebaseDependencyError):
         return str(error)
-    return str(error)
+    raw_message = str(error)
+    normalized = raw_message.lower()
+    if (
+        "couldn't get a connection after" in normalized
+        or "server closed the connection unexpectedly" in normalized
+        or "connection failed" in normalized
+    ):
+        connection = lakebase_connection_summary(config) if config else {}
+        timeout = connection.get("pool_timeout_seconds") or "30"
+        branch_parent = connection.get("branch_parent")
+        location = f" for {branch_parent}" if branch_parent else ""
+        return (
+            f"Lakebase did not complete a Postgres connection within {timeout}s{location}. "
+            "For autoscaling Lakebase this usually means the branch READ_WRITE endpoint is cold, "
+            "restarting, missing an available host, or unreachable from this machine/VPN. "
+            "Verify the project and branch from the Databricks postgres API, confirm the branch "
+            "has an AVAILABLE READ_WRITE endpoint, then retry after the endpoint is warm. "
+            f"Raw Lakebase error: {raw_message}"
+        )
+    return raw_message

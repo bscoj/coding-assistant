@@ -1143,6 +1143,124 @@ def _make_diff(old_text: str, new_text: str, path_label: str) -> str:
     return "\n".join(lines[:400])
 
 
+def _text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _strip_unified_diff_path(raw_path: str) -> str:
+    value = raw_path.strip().split("\t", 1)[0].strip()
+    for suffix in (" (current)", " (proposed)"):
+        if value.endswith(suffix):
+            value = value[: -len(suffix)]
+    if value in {"/dev/null", "dev/null"}:
+        return "/dev/null"
+    if value.startswith("a/") or value.startswith("b/"):
+        value = value[2:]
+    return value
+
+
+def _parse_hunk_header(header: str) -> tuple[int, int, int, int]:
+    match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", header)
+    if not match:
+        raise ValueError(f"Invalid unified diff hunk header: {header}")
+    old_start = int(match.group(1))
+    old_count = int(match.group(2) or "1")
+    new_start = int(match.group(3))
+    new_count = int(match.group(4) or "1")
+    return old_start, old_count, new_start, new_count
+
+
+def _parse_unified_diff(diff_text: str) -> list[dict[str, Any]]:
+    lines = diff_text.splitlines()
+    files: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("diff --git "):
+            index += 1
+            continue
+        if not line.startswith("--- "):
+            index += 1
+            continue
+        old_path = _strip_unified_diff_path(line[4:])
+        index += 1
+        if index >= len(lines) or not lines[index].startswith("+++ "):
+            raise ValueError(f"Expected +++ path after --- {old_path}")
+        new_path = _strip_unified_diff_path(lines[index][4:])
+        index += 1
+        hunks: list[dict[str, Any]] = []
+        while index < len(lines):
+            current = lines[index]
+            if current.startswith("--- ") or current.startswith("diff --git "):
+                break
+            if not current.startswith("@@ "):
+                index += 1
+                continue
+            old_start, old_count, new_start, new_count = _parse_hunk_header(current)
+            index += 1
+            hunk_lines: list[str] = []
+            while index < len(lines):
+                hunk_line = lines[index]
+                if hunk_line.startswith("@@ ") or hunk_line.startswith("--- ") or hunk_line.startswith("diff --git "):
+                    break
+                if hunk_line.startswith("\\ No newline"):
+                    index += 1
+                    continue
+                if not hunk_line or hunk_line[0] not in {" ", "+", "-"}:
+                    raise ValueError(f"Invalid unified diff hunk line: {hunk_line}")
+                hunk_lines.append(hunk_line)
+                index += 1
+            hunks.append(
+                {
+                    "old_start": old_start,
+                    "old_count": old_count,
+                    "new_start": new_start,
+                    "new_count": new_count,
+                    "lines": hunk_lines,
+                }
+            )
+        if not hunks:
+            raise ValueError(f"No hunks found for {new_path if new_path != '/dev/null' else old_path}")
+        files.append({"old_path": old_path, "new_path": new_path, "hunks": hunks})
+    if not files:
+        raise ValueError("No unified diff file sections found.")
+    return files
+
+
+def _apply_unified_hunks(old_text: str, hunks: list[dict[str, Any]], path_label: str) -> str:
+    old_lines = old_text.splitlines()
+    output: list[str] = []
+    old_index = 0
+    for hunk in hunks:
+        hunk_start = max(0, int(hunk["old_start"]) - 1)
+        if hunk_start < old_index:
+            raise ValueError(f"Overlapping hunk for {path_label}")
+        output.extend(old_lines[old_index:hunk_start])
+        cursor = hunk_start
+        for raw_line in hunk["lines"]:
+            marker = raw_line[:1]
+            content = raw_line[1:]
+            if marker == " ":
+                if cursor >= len(old_lines) or old_lines[cursor] != content:
+                    raise ValueError(
+                        f"Context mismatch while applying patch to {path_label} near line {cursor + 1}."
+                    )
+                output.append(content)
+                cursor += 1
+            elif marker == "-":
+                if cursor >= len(old_lines) or old_lines[cursor] != content:
+                    raise ValueError(
+                        f"Removal mismatch while applying patch to {path_label} near line {cursor + 1}."
+                    )
+                cursor += 1
+            elif marker == "+":
+                output.append(content)
+        old_index = cursor
+    output.extend(old_lines[old_index:])
+    trailing_newline = "\n" if old_text.endswith("\n") else ""
+    return "\n".join(output) + trailing_newline
+
+
 def _stage_operation(operation: dict) -> str:
     operation_id = f"write_{uuid.uuid4().hex[:12]}"
     staged = _load_staged_writes()
@@ -1854,6 +1972,89 @@ def stage_patch_edit(
     )
 
 
+@tool
+def stage_unified_diff_patch(
+    diff_text: str,
+    expected_file_hashes_json: str = "",
+    summary: str = "Unified diff patch",
+) -> str:
+    """Stage a unified-diff patch with optional current-file SHA-256 preconditions. The user must approve before the patch is applied."""
+    if not workspace_selected():
+        return workspace_selection_error()
+    if not writes_enabled():
+        return "File writes are disabled by configuration."
+    if not diff_text.strip():
+        return "Provide a non-empty unified diff."
+
+    expected_hashes: dict[str, str] = {}
+    if expected_file_hashes_json.strip():
+        try:
+            raw_hashes = json.loads(expected_file_hashes_json)
+        except json.JSONDecodeError as exc:
+            return f"Invalid expected_file_hashes_json: {exc}"
+        if not isinstance(raw_hashes, dict):
+            return "expected_file_hashes_json must be a JSON object mapping path to sha256."
+        expected_hashes = {str(path): str(value) for path, value in raw_hashes.items()}
+
+    try:
+        parsed_files = _parse_unified_diff(diff_text)
+    except ValueError as exc:
+        return str(exc)
+
+    changes: list[dict[str, Any]] = []
+    try:
+        for parsed in parsed_files:
+            old_path = str(parsed["old_path"])
+            new_path = str(parsed["new_path"])
+            if new_path == "/dev/null":
+                return "Unified diff deletes are not supported yet. Stage a targeted overwrite or manual change instead."
+            rel_path = new_path if new_path != "/dev/null" else old_path
+            target = _resolve_path(rel_path)
+            exists = target.exists()
+            if old_path == "/dev/null" and exists:
+                return f"Refusing to create {rel_path}: file already exists."
+            if old_path != "/dev/null" and (not exists or target.is_dir()):
+                return f"Cannot patch {rel_path}; file does not exist."
+            current_text = _read_text(target) if exists else ""
+            current_hash = _text_sha256(current_text)
+            expected_hash = expected_hashes.get(rel_path) or expected_hashes.get(str(target))
+            if expected_hash and expected_hash != current_hash:
+                return (
+                    f"Refusing to stage patch for {rel_path}: expected sha256 {expected_hash}, "
+                    f"but current file hash is {current_hash}."
+                )
+            new_text = _apply_unified_hunks(current_text, parsed["hunks"], rel_path)
+            mode = "create" if not exists else "patch"
+            changes.append(
+                {
+                    "path": str(target.relative_to(workspace_root())),
+                    "absolute_path": str(target),
+                    "mode": mode,
+                    "content": new_text,
+                    "preview": _make_diff(current_text, new_text, str(target.relative_to(workspace_root()))),
+                    "expected_sha256": expected_hash or current_hash,
+                    "current_sha256": current_hash,
+                }
+            )
+    except ValueError as exc:
+        return str(exc)
+
+    operation_id = _stage_operation(
+        {
+            "kind": "change_set",
+            "tool_name": "unified_diff_patch",
+            "summary": summary,
+            "changes": changes,
+        }
+    )
+    return _build_marker(
+        operation_id=operation_id,
+        tool_name="unified_diff_patch",
+        summary=summary,
+        changes=changes,
+    )
+
+
 def _prepare_change(change: dict) -> dict:
     change_type = change.get("type", "patch")
     path = str(change.get("path", "")).strip()
@@ -2020,6 +2221,7 @@ FILESYSTEM_TOOLS = [
     read_file,
     stage_file_write,
     stage_patch_edit,
+    stage_unified_diff_patch,
     stage_change_plan,
     apply_staged_write,
     show_staged_write,

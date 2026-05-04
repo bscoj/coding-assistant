@@ -812,6 +812,7 @@ def _system_context_blocks(
     memory_mode: str | None = None,
     user_profile_block: str | None = None,
     repo_instruction_blocks: list[str] | None = None,
+    context_pack_blocks: list[str] | None = None,
     hook_instruction_blocks: list[str] | None = None,
     tool_memory_block: str | None = None,
     skill_blocks: list[str] | None = None,
@@ -824,6 +825,8 @@ def _system_context_blocks(
         blocks.append(("user_profile", [user_profile_block]))
     if repo_instruction_blocks:
         blocks.append(("repo_instructions", list(repo_instruction_blocks)))
+    if context_pack_blocks:
+        blocks.append(("repo_context_pack", list(context_pack_blocks)))
     if hook_instruction_blocks:
         blocks.append(("runtime_hook_instructions", list(hook_instruction_blocks)))
     if skill_blocks:
@@ -978,6 +981,7 @@ def build_prompt_budget_breakdown(
     memory_mode: str | None = None,
     user_profile_block: str | None = None,
     repo_instruction_blocks: list[str] | None = None,
+    context_pack_blocks: list[str] | None = None,
     hook_instruction_blocks: list[str] | None = None,
     tool_memory_block: str | None = None,
     skill_blocks: list[str] | None = None,
@@ -994,6 +998,7 @@ def build_prompt_budget_breakdown(
         memory_mode=memory_mode,
         user_profile_block=user_profile_block,
         repo_instruction_blocks=repo_instruction_blocks,
+        context_pack_blocks=context_pack_blocks,
         hook_instruction_blocks=hook_instruction_blocks,
         tool_memory_block=tool_memory_block,
         skill_blocks=skill_blocks,
@@ -1016,6 +1021,7 @@ def build_optimized_messages_with_budget(
     memory_mode: str | None = None,
     user_profile_block: str | None = None,
     repo_instruction_blocks: list[str] | None = None,
+    context_pack_blocks: list[str] | None = None,
     hook_instruction_blocks: list[str] | None = None,
     tool_memory_block: str | None = None,
     skill_blocks: list[str] | None = None,
@@ -1029,6 +1035,7 @@ def build_optimized_messages_with_budget(
         memory_mode=memory_mode,
         user_profile_block=user_profile_block,
         repo_instruction_blocks=repo_instruction_blocks,
+        context_pack_blocks=context_pack_blocks,
         hook_instruction_blocks=hook_instruction_blocks,
         tool_memory_block=tool_memory_block,
         skill_blocks=skill_blocks,
@@ -1087,6 +1094,7 @@ def build_optimized_messages_with_budget(
             memory_mode=memory_mode,
             user_profile_block=user_profile_block,
             repo_instruction_blocks=repo_instruction_blocks,
+            context_pack_blocks=context_pack_blocks,
             hook_instruction_blocks=hook_instruction_blocks,
             tool_memory_block=(
                 _compact_tool_memory_block(tool_memory_block)
@@ -1202,6 +1210,7 @@ def build_optimized_messages(
     memory_mode: str | None = None,
     user_profile_block: str | None = None,
     repo_instruction_blocks: list[str] | None = None,
+    context_pack_blocks: list[str] | None = None,
     hook_instruction_blocks: list[str] | None = None,
     tool_memory_block: str | None = None,
     skill_blocks: list[str] | None = None,
@@ -1215,6 +1224,7 @@ def build_optimized_messages(
         memory_mode=memory_mode,
         user_profile_block=user_profile_block,
         repo_instruction_blocks=repo_instruction_blocks,
+        context_pack_blocks=context_pack_blocks,
         hook_instruction_blocks=hook_instruction_blocks,
         tool_memory_block=tool_memory_block,
         skill_blocks=skill_blocks,

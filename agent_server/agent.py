@@ -44,6 +44,7 @@ from agent_server.memory_pipeline import (
 from agent_server.memory_store import get_memory_store
 from agent_server.playbooks import build_playbook_blocks
 from agent_server.repo_instructions import build_repo_instruction_blocks
+from agent_server.repo_sense import REPO_SENSE_TOOLS, build_context_pack_block
 from agent_server.runtime_hooks import (
     build_runtime_hook_blocks,
     emit_runtime_hook_event,
@@ -77,6 +78,9 @@ Core behavior:
 - For ML or data-science repos, prefer ml_repo_overview() early so you can orient on training, evaluation, data pipelines, serving, and likely risks in one pass.
 - For CI/CD or GitHub Actions debugging, prefer ci_repo_overview() early so you can orient on workflows, referenced scripts, local actions, manifests, and likely failure points in one pass.
 - For CI/CD debugging, follow the failing workflow's references and recommended_first_reads before broad repo exploration.
+- Use the automatic repo context pack as your starting map. It gives a task recipe, likely files, and starter snippets before you choose additional reads.
+- Prefer project_map_overview(), search_project_file_map(), task_file_recipe(), find_symbol(), read_symbol(), find_references(), read_related_tests(), and read_import_graph() when names, components, tests, or import relationships are more useful than broad text search.
+- When the user confirms a stable file role or project convention, save it with register_project_file_role() so future turns start from the right project map.
 - For SQL or analytics tasks, prefer analytics_context_overview(), search_analytics_tables(), search_analytics_joins(), search_analytics_metrics(), search_analytics_filter_values(), suggest_filter_candidates_from_validated_sql(), suggest_sql_starting_points(), validated_sql_store_overview(), search_validated_sql_patterns(), and search_validated_sql_by_table_or_join() before broad repo search so you can reuse trusted tables, joins, metrics, and filter mappings.
 - For SQL or analytics tasks, start with resolve_sql_task_context() when you want the tightest relevant packet of prior query knowledge, then expand with targeted search tools only if needed.
 - SQL and analytics knowledge tools remain available even when no repo is selected. Without a selected repo, they use the shared global SQL knowledge scope instead of a repo-specific scope.
@@ -98,6 +102,7 @@ Core behavior:
 
 File changes:
 - Use staged write tools for all file edits.
+- Prefer stage_unified_diff_patch() for multi-line code edits when you can produce a normal unified diff with stable context and file hashes.
 - Never ask the user to type approval tokens manually. The UI provides Allow / Deny controls for file changes.
 """
 
@@ -203,6 +208,7 @@ async def init_agent(
         *CHAT_HISTORY_TOOLS,
         *ANALYTICS_CONTEXT_TOOLS,
         *SQL_MEMORY_TOOLS,
+        *REPO_SENSE_TOOLS,
     ]
     tools = wrap_tools_with_runtime_hooks(tools, workspace_root_override)
     # To use MCP server tools instead, replace the line above with:
@@ -255,6 +261,7 @@ async def stream_handler(
     skill_blocks = build_skill_blocks(turn_items)
     workflow_blocks = build_playbook_blocks(turn_items)
     repo_instruction_blocks = build_repo_instruction_blocks(current_workspace_root)
+    context_pack_block, context_pack_status = build_context_pack_block(turn_items)
     hook_instruction_blocks = [
         *build_runtime_hook_blocks(current_workspace_root, "SessionStart"),
         *build_runtime_hook_blocks(current_workspace_root, "BeforeAgent"),
@@ -321,6 +328,7 @@ async def stream_handler(
             memory_mode=memory_mode,
             user_profile_block=user_profile_block,
             repo_instruction_blocks=repo_instruction_blocks,
+            context_pack_blocks=[context_pack_block] if context_pack_block else None,
             hook_instruction_blocks=hook_instruction_blocks,
             task_scratchpad_block=task_scratchpad_block,
             tool_memory_block=tool_memory_block,
@@ -335,6 +343,7 @@ async def stream_handler(
             memory_mode=memory_mode,
             user_profile_block=user_profile_block,
             repo_instruction_blocks=repo_instruction_blocks,
+            context_pack_blocks=[context_pack_block] if context_pack_block else None,
             hook_instruction_blocks=hook_instruction_blocks,
             task_scratchpad_block=task_scratchpad_block,
             tool_memory_block=tool_memory_block,
@@ -362,6 +371,19 @@ async def stream_handler(
                 output_index=0,
                 sequence_number=0,
             )
+        if context_pack_status:
+            yield ResponsesAgentStreamEvent(
+                type="response.output_item.done",
+                item={
+                    "type": "codex_status",
+                    "id": f"status_{uuid.uuid4().hex}",
+                    "status": "context_pack",
+                    "message": context_pack_status.get("message", "Built repo focus"),
+                    "details": context_pack_status,
+                },
+                output_index=0,
+                sequence_number=0,
+            )
         emit_runtime_hook_event(
             current_workspace_root,
             "BeforeAgent",
@@ -371,6 +393,8 @@ async def stream_handler(
                 "context_mode": context_mode,
                 "response_mode": response_mode,
                 "repo_instruction_blocks": len(repo_instruction_blocks),
+                "context_pack": bool(context_pack_block),
+                "context_pack_task_kind": (context_pack_status or {}).get("taskKind"),
                 "workflow_blocks": len(workflow_blocks),
                 "skill_blocks": len(skill_blocks),
                 "estimated_prompt_tokens": prompt_budget["total_estimated_prompt_tokens"],

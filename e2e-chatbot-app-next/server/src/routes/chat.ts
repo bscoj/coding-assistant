@@ -503,6 +503,26 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
                     : 'Compressing memory...',
               });
             }
+            if (
+              raw?.type === 'response.output_item.done' &&
+              raw?.item?.type === 'codex_status' &&
+              raw?.item?.status === 'context_pack' &&
+              activeWriter
+            ) {
+              activeWriter.write({
+                type: 'data-agentFocus',
+                data: {
+                  message:
+                    typeof raw?.item?.message === 'string'
+                      ? raw.item.message
+                      : 'Built repo focus',
+                  ...(typeof raw?.item?.details === 'object' &&
+                  raw.item.details !== null
+                    ? raw.item.details
+                    : {}),
+                },
+              });
+            }
             // Extract trace in Databricks serving endpoint output format, if present
             if (raw?.type === 'response.output_item.done') {
               const traceIdFromChunk =

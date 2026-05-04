@@ -30,6 +30,13 @@ import { ToolActivityRail } from './tool-activity-rail';
 import { useLocalStorage } from 'usehooks-ts';
 import { getMessageUsage, sumMessageUsageTotals } from '@/lib/token-usage';
 
+type AgentFocus = {
+  message?: string;
+  taskKind?: string;
+  recommendedFiles?: string[];
+  recipe?: string[];
+};
+
 export function Chat({
   id,
   initialMessages,
@@ -70,6 +77,7 @@ export function Chat({
   const [memoryStatus, setMemoryStatus] = useState<string | undefined>();
   const memoryStatusRef = useRef<string | undefined>(memoryStatus);
   memoryStatusRef.current = memoryStatus;
+  const [agentFocus, setAgentFocus] = useState<AgentFocus | undefined>();
 
   const [lastPart, setLastPart] = useState<UIMessageChunk | undefined>();
   const lastPartRef = useRef<UIMessageChunk | undefined>(lastPart);
@@ -193,6 +201,9 @@ export function Chat({
       if (dataPart.type === 'data-memoryStatus') {
         setMemoryStatus(dataPart.data as string);
       }
+      if (dataPart.type === 'data-agentFocus') {
+        setAgentFocus(dataPart.data as AgentFocus);
+      }
       if (dataPart.type === 'data-title') {
         setStreamTitle(dataPart.data as string);
         setTitlePending(false);
@@ -209,6 +220,7 @@ export function Chat({
       messages: finishedMessages,
       }) => {
       setMemoryStatus(undefined);
+      setAgentFocus(undefined);
       setTitlePending(false);
 
       // If user aborted, don't try to resume
@@ -269,6 +281,7 @@ export function Chat({
     },
     onError: (error) => {
       setMemoryStatus(undefined);
+      setAgentFocus(undefined);
       console.log('[Chat onError] Error occurred:', error);
 
       // Only show toast for explicit ChatSDKError (backend validation errors)
@@ -374,6 +387,28 @@ export function Chat({
               <div className="mx-auto flex w-full max-w-4xl items-center gap-2 rounded-full border border-emerald-300/15 bg-emerald-300/[0.06] px-3 py-1.5 text-xs text-emerald-100/82">
                 <div className="h-2 w-2 rounded-full bg-emerald-300/80 animate-pulse" />
                 <span>{memoryStatus}</span>
+              </div>
+            </div>
+          )}
+
+          {agentFocus && (
+            <div className="px-4 pt-2">
+              <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 rounded-full border border-sky-300/15 bg-sky-300/[0.06] px-3 py-1.5 text-xs text-sky-100/82">
+                <div className="h-2 w-2 rounded-full bg-sky-300/80 animate-pulse" />
+                <span>{agentFocus.message ?? 'Built repo focus'}</span>
+                {agentFocus.taskKind ? (
+                  <span className="rounded-full bg-white/[0.07] px-2 py-0.5 font-mono text-[11px] text-white/66">
+                    {agentFocus.taskKind}
+                  </span>
+                ) : null}
+                {(agentFocus.recommendedFiles ?? []).slice(0, 3).map((path) => (
+                  <span
+                    key={path}
+                    className="max-w-[220px] truncate rounded-full bg-white/[0.05] px-2 py-0.5 font-mono text-[11px] text-white/58"
+                  >
+                    {path}
+                  </span>
+                ))}
               </div>
             </div>
           )}
