@@ -91,6 +91,7 @@ type SqlKnowledgeStatus = {
       role?: string | null;
       has_password?: boolean;
       sslmode_required?: boolean;
+      connect_timeout_seconds?: string;
       pool_timeout_seconds?: string;
       pool_min_size?: string;
       branch_parent?: string;
@@ -706,7 +707,8 @@ export function ProfileSheet({
     if (!open) {
       return;
     }
-    void refreshSqlStatus();
+    setSqlStatus(null);
+    setSqlStatusError(null);
   }, [open, repo?.path, sqlKnowledge?.mode]);
 
   const activeEntries = useMemo(
@@ -901,7 +903,7 @@ export function ProfileSheet({
     setSqlStatusError(null);
     try {
       await setSqlKnowledgeMode(nextMode);
-      await refreshSqlStatus();
+      setSqlStatus(null);
     } catch (err: unknown) {
       setSqlStatusError(err instanceof Error ? err.message : String(err));
     }
@@ -916,7 +918,7 @@ export function ProfileSheet({
         branch: lakebaseBranchDraft,
         instanceName: lakebaseInstanceDraft,
       });
-      await refreshSqlStatus();
+      setSqlStatus(null);
     } catch (err: unknown) {
       setSqlStatusError(err instanceof Error ? err.message : String(err));
     }
@@ -1489,7 +1491,11 @@ export function ProfileSheet({
                     {sqlStatus?.lakebase.connection ? (
                       <p className="text-xs leading-5 text-white/45">
                         Lakebase {sqlStatus.lakebase.connection.kind ?? 'connection'} -
-                        timeout {sqlStatus.lakebase.connection.pool_timeout_seconds ?? '30'}s
+                        timeout{' '}
+                        {sqlStatus.lakebase.connection.connect_timeout_seconds ??
+                          sqlStatus.lakebase.connection.pool_timeout_seconds ??
+                          '30'}
+                        s
                         {sqlStatus.lakebase.connection.branch_parent
                           ? ` - ${sqlStatus.lakebase.connection.branch_parent}`
                           : ''}

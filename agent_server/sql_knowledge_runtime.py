@@ -130,7 +130,7 @@ def normalize_sql_workspace_root(raw_workspace_root: str | None) -> str:
 def effective_sql_knowledge_mode(
     requested_mode: SqlKnowledgeMode, *, lakebase_available: bool
 ) -> SqlKnowledgeMode:
-    if requested_mode == "hybrid" and not lakebase_available:
+    if requested_mode in {"lakebase", "hybrid"} and not lakebase_available:
         return "local"
     return requested_mode
 
@@ -465,13 +465,12 @@ def get_active_sql_store(
     config = lakebase_connection_config(headers)
     if requested_mode == "local":
         return local_store
-    if requested_mode == "lakebase":
-        lakebase_store, _ = _lakebase_stores(config)
-        return lakebase_store
     try:
         lakebase_store, _ = _lakebase_stores(config)
     except Exception:
         return local_store
+    if requested_mode == "lakebase":
+        return lakebase_store
     return HybridValidatedSqlStore(local_store, lakebase_store)
 
 
@@ -488,13 +487,12 @@ def get_active_analytics_context_store(
     config = lakebase_connection_config(headers)
     if requested_mode == "local":
         return local_store
-    if requested_mode == "lakebase":
-        _, lakebase_store = _lakebase_stores(config)
-        return lakebase_store
     try:
         _, lakebase_store = _lakebase_stores(config)
     except Exception:
         return local_store
+    if requested_mode == "lakebase":
+        return lakebase_store
     return HybridAnalyticsContextStore(local_store, lakebase_store)
 
 
@@ -577,8 +575,9 @@ def sql_knowledge_status(
         )
     except Exception as exc:
         payload["lakebase"]["error"] = lakebase_user_facing_error(exc, config=config)
-        if requested_mode == "hybrid":
+        if requested_mode in {"lakebase", "hybrid"}:
             payload["effective_mode"] = "local"
+            payload["active"] = payload["local"]
         return payload
 
     if requested_mode == "hybrid":
@@ -727,18 +726,16 @@ def sync_sql_knowledge(
 def lakebase_connection_summary(config: LakebaseConnectionConfig) -> dict[str, Any]:
     if config.database_url:
         summary = database_url_summary(config.database_url) or {"kind": "database_url"}
-        summary["pool_timeout_seconds"] = (
-            os.getenv("LAKEBASE_POOL_TIMEOUT_SECONDS") or ""
-        ).strip() or "90"
-        summary["pool_min_size"] = (os.getenv("LAKEBASE_POOL_MIN_SIZE") or "").strip() or "0"
+        summary["connect_timeout_seconds"] = (
+            os.getenv("LAKEBASE_CONNECT_TIMEOUT_SECONDS") or ""
+        ).strip() or "20"
         return summary
 
     if config.pg_host or config.pg_database or config.pg_user:
         summary = pg_env_summary() or {"kind": "pg_env"}
-        summary["pool_timeout_seconds"] = (
-            os.getenv("LAKEBASE_POOL_TIMEOUT_SECONDS") or ""
-        ).strip() or "90"
-        summary["pool_min_size"] = (os.getenv("LAKEBASE_POOL_MIN_SIZE") or "").strip() or "0"
+        summary["connect_timeout_seconds"] = (
+            os.getenv("LAKEBASE_CONNECT_TIMEOUT_SECONDS") or ""
+        ).strip() or "20"
         return summary
 
     pool_timeout = (os.getenv("LAKEBASE_POOL_TIMEOUT_SECONDS") or "").strip() or (
@@ -775,7 +772,11 @@ def lakebase_user_facing_error(
         or "connection failed" in normalized
     ):
         connection = lakebase_connection_summary(config) if config else {}
-        timeout = connection.get("pool_timeout_seconds") or "30"
+        timeout = (
+            connection.get("connect_timeout_seconds")
+            or connection.get("pool_timeout_seconds")
+            or "30"
+        )
         branch_parent = connection.get("branch_parent")
         location = f" for {branch_parent}" if branch_parent else ""
         return (

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
+from time import time
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -97,10 +98,13 @@ class DirectPostgresLakebaseClient:
         try:
             import psycopg
             from psycopg.rows import dict_row
-            from psycopg_pool import ConnectionPool
         except ImportError as exc:
             raise LakebaseDependencyError(lakebase_dependency_error_message()) from exc
 
+        self._conninfo = conninfo
+        self._password_provider = password_provider
+        self._cached_password: str | None = None
+        self._cached_password_at = 0.0
         password = (
             os.getenv("LAKEBASE_DATABASE_PASSWORD")
             or os.getenv("LAKEBASE_DATABASE_OAUTH_TOKEN")
@@ -117,25 +121,8 @@ class DirectPostgresLakebaseClient:
         }
         if password:
             kwargs["password"] = password
-
-        token_provider = password_provider
-
-        class RotatingConnection(psycopg.Connection):
-            @classmethod
-            def connect(cls, conninfo: str = "", **connect_kwargs: Any):
-                if token_provider is not None:
-                    connect_kwargs["password"] = token_provider()
-                return super().connect(conninfo, **connect_kwargs)
-
-        self._pool = ConnectionPool(
-            conninfo=conninfo,
-            kwargs=kwargs,
-            min_size=_env_int("LAKEBASE_POOL_MIN_SIZE", 0),
-            max_size=_env_int("LAKEBASE_POOL_MAX_SIZE", 4),
-            timeout=_env_float("LAKEBASE_POOL_TIMEOUT_SECONDS", 90.0),
-            open=True,
-            connection_class=RotatingConnection,
-        )
+        kwargs["connect_timeout"] = _env_int("LAKEBASE_CONNECT_TIMEOUT_SECONDS", 20)
+        self._connect_kwargs = kwargs
         self._psycopg = psycopg
 
     def execute(
@@ -143,7 +130,10 @@ class DirectPostgresLakebaseClient:
         sql_text: str,
         params: tuple[Any, ...] | dict[str, Any] | None = None,
     ) -> list[Any] | None:
-        with self._pool.connection() as conn:
+        kwargs = dict(self._connect_kwargs)
+        if self._password_provider is not None:
+            kwargs["password"] = self._password()
+        with self._psycopg.connect(self._conninfo, **kwargs) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql_text, params)
                 if cur.description:
@@ -151,7 +141,18 @@ class DirectPostgresLakebaseClient:
                 return None
 
     def close(self) -> None:
-        self._pool.close()
+        return None
+
+    def _password(self) -> str:
+        if self._password_provider is None:
+            return ""
+        now = time()
+        if self._cached_password and now - self._cached_password_at < 14 * 60:
+            return self._cached_password
+        password = self._password_provider()
+        self._cached_password = password
+        self._cached_password_at = now
+        return password
 
 
 def direct_lakebase_conninfo(database_url: str | None) -> str | None:
