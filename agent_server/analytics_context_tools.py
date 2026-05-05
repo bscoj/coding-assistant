@@ -17,6 +17,7 @@ from agent_server.sql_memory_store import (
     extract_join_pairs,
     extract_tables,
 )
+from agent_server.sql_search import keyword_fanout_search
 
 SELECT_STAR_PATTERN = re.compile(r"(?is)\bselect\s+\*")
 BRONZE_PATTERN = re.compile(r"(?i)(?:^|[._])bronze(?:[._]|$)")
@@ -28,6 +29,27 @@ def _split_csv(values: str) -> list[str]:
 
 def _current_workspace_root() -> str:
     return str(workspace_root())
+
+
+def _keyword_search_payload(
+    *,
+    query: str,
+    search_fn,
+    limit: int,
+    max_terms: int = 8,
+) -> dict:
+    payload = keyword_fanout_search(
+        query=query,
+        search_fn=search_fn,
+        limit=max(1, min(limit, 20)),
+        max_terms=max_terms,
+    )
+    return {
+        "query": query,
+        "search_terms": payload["search_terms"],
+        "results": payload["results"],
+        "guidance": "Search is keyword fan-out: each term is searched separately, then ranked and merged.",
+    }
 
 
 def sync_validated_pattern_into_analytics_context(pattern: dict[str, object]) -> None:
@@ -113,82 +135,112 @@ def analytics_context_overview(limit: int = 10) -> str:
 
 @tool
 def search_analytics_tables(query: str, limit: int = 8) -> str:
-    """Search curated analytics table context by table name, business term, grain, synonym, or important column."""
+    """Search curated analytics table context by focused table, business term, grain, synonym, or column keywords. Multi-word input is split into separate keyword searches."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
-    payload = {
-        "query": needle,
-        "results": get_active_analytics_context_store().search_tables(
-            _current_workspace_root(),
-            needle,
-            limit=max(1, min(limit, 20)),
+    store = get_active_analytics_context_store()
+    workspace = _current_workspace_root()
+    payload = _keyword_search_payload(
+        query=needle,
+        search_fn=lambda term, bounded_limit: store.search_tables(
+            workspace,
+            term,
+            limit=bounded_limit,
         ),
-    }
+        limit=limit,
+    )
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
 @tool
 def search_analytics_joins(query: str, limit: int = 8) -> str:
-    """Search curated analytics join knowledge by table name, key, relationship, or grain note."""
+    """Search curated analytics join knowledge by focused table, key, relationship, or grain keywords. Multi-word input is split into separate keyword searches."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
-    payload = {
-        "query": needle,
-        "results": get_active_analytics_context_store().search_joins(
-            _current_workspace_root(),
-            needle,
-            limit=max(1, min(limit, 20)),
+    store = get_active_analytics_context_store()
+    workspace = _current_workspace_root()
+    payload = _keyword_search_payload(
+        query=needle,
+        search_fn=lambda term, bounded_limit: store.search_joins(
+            workspace,
+            term,
+            limit=bounded_limit,
         ),
-    }
+        limit=limit,
+    )
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
 @tool
 def search_analytics_metrics(query: str, limit: int = 8) -> str:
-    """Search curated analytics metric definitions by metric name, synonym, definition, or source table."""
+    """Search curated analytics metric definitions by focused metric, synonym, definition, or table keywords. Multi-word input is split into separate keyword searches."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
-    payload = {
-        "query": needle,
-        "results": get_active_analytics_context_store().search_metrics(
-            _current_workspace_root(),
-            needle,
-            limit=max(1, min(limit, 20)),
+    store = get_active_analytics_context_store()
+    workspace = _current_workspace_root()
+    payload = _keyword_search_payload(
+        query=needle,
+        search_fn=lambda term, bounded_limit: store.search_metrics(
+            workspace,
+            term,
+            limit=bounded_limit,
         ),
-    }
+        limit=limit,
+    )
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
 @tool
 def search_analytics_filter_values(query: str, limit: int = 8) -> str:
-    """Search curated analytics filter values by business concept, abbreviation, canonical value, table, or column."""
+    """Search curated analytics filter values by focused concept, abbreviation, canonical value, table, or column keywords. Multi-word input is split into separate keyword searches."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
-    payload = {
-        "query": needle,
-        "results": get_active_analytics_context_store().search_filter_values(
-            _current_workspace_root(),
-            needle,
-            limit=max(1, min(limit, 20)),
+    store = get_active_analytics_context_store()
+    workspace = _current_workspace_root()
+    payload = _keyword_search_payload(
+        query=needle,
+        search_fn=lambda term, bounded_limit: store.search_filter_values(
+            workspace,
+            term,
+            limit=bounded_limit,
         ),
-    }
+        limit=limit,
+    )
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
 @tool
 def suggest_filter_candidates_from_validated_sql(query: str = "", limit: int = 8) -> str:
     """Mine likely exact-value filter candidates from validated SQL so you can promote repeated literals into curated business mappings."""
+    needle = query.strip()
+    sql_store = get_active_sql_store()
+    workspace = _current_workspace_root()
+    if needle:
+        payload = _keyword_search_payload(
+            query=needle,
+            search_fn=lambda term, bounded_limit: sql_store.suggest_filter_candidates(
+                workspace,
+                term,
+                limit=bounded_limit,
+            ),
+            limit=limit,
+        )
+    else:
+        payload = {
+            "query": "",
+            "search_terms": [],
+            "results": sql_store.suggest_filter_candidates(
+                workspace,
+                "",
+                limit=max(1, min(limit, 20)),
+            ),
+        }
     payload = {
-        "query": query.strip(),
-        "results": get_active_sql_store().suggest_filter_candidates(
-            _current_workspace_root(),
-            query.strip(),
-            limit=max(1, min(limit, 20)),
-        ),
+        **payload,
         "guidance": (
             "These are mined from trusted SQL patterns. Promote the high-value ones "
             "with register_analytics_filter_value() when you want durable alias-to-filter behavior."
@@ -355,14 +407,65 @@ def resolve_sql_task_context(task: str, limit: int = 4) -> str:
     workspace = _current_workspace_root()
     bounded_limit = max(1, min(limit, 8))
 
-    tables = analytics_store.search_tables(workspace, needle, limit=bounded_limit)
-    joins = analytics_store.search_joins(workspace, needle, limit=bounded_limit)
-    metrics = analytics_store.search_metrics(workspace, needle, limit=bounded_limit)
-    filter_values = analytics_store.search_filter_values(workspace, needle, limit=bounded_limit)
-    patterns = sql_store.search_patterns(workspace, needle, limit=bounded_limit)
+    table_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: analytics_store.search_tables(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    join_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: analytics_store.search_joins(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    metric_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: analytics_store.search_metrics(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    filter_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: analytics_store.search_filter_values(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    pattern_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: sql_store.search_patterns(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    tables = table_search["results"]
+    joins = join_search["results"]
+    metrics = metric_search["results"]
+    filter_values = filter_search["results"]
+    patterns = pattern_search["results"]
 
     payload = {
         "task": needle,
+        "search_terms": pattern_search["search_terms"],
         "tables": tables[:bounded_limit],
         "joins": joins[:bounded_limit],
         "metrics": metrics[:bounded_limit],
@@ -416,19 +519,77 @@ def suggest_sql_starting_points(task: str, limit: int = 6) -> str:
     sql_store = get_active_sql_store()
     workspace = _current_workspace_root()
 
-    tables = analytics_store.search_tables(workspace, needle, limit=max(1, min(limit, 12)))
-    joins = analytics_store.search_joins(workspace, needle, limit=max(1, min(limit, 12)))
-    metrics = analytics_store.search_metrics(workspace, needle, limit=max(1, min(limit, 12)))
-    filter_values = analytics_store.search_filter_values(workspace, needle, limit=max(1, min(limit, 12)))
-    mined_filter_candidates = sql_store.suggest_filter_candidates(
-        workspace,
-        needle,
-        limit=max(1, min(limit, 12)),
+    bounded_limit = max(1, min(limit, 12))
+    table_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: analytics_store.search_tables(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
     )
-    patterns = sql_store.search_patterns(workspace, needle, limit=max(1, min(limit, 12)))
+    join_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: analytics_store.search_joins(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    metric_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: analytics_store.search_metrics(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    filter_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: analytics_store.search_filter_values(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    mined_filter_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: sql_store.suggest_filter_candidates(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    pattern_search = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, term_limit: sql_store.search_patterns(
+            workspace,
+            term,
+            limit=term_limit,
+        ),
+        limit=bounded_limit,
+        max_terms=6,
+    )
+    tables = table_search["results"]
+    joins = join_search["results"]
+    metrics = metric_search["results"]
+    filter_values = filter_search["results"]
+    mined_filter_candidates = mined_filter_search["results"]
+    patterns = pattern_search["results"]
 
     payload = {
         "task": needle,
+        "search_terms": pattern_search["search_terms"],
         "recommended_tables": tables[:limit],
         "recommended_joins": joins[:limit],
         "recommended_metrics": metrics[:limit],

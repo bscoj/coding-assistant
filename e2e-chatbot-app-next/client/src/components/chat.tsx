@@ -16,7 +16,7 @@ import type {
 import { unstable_serialize } from 'swr/infinite';
 import { getChatHistoryPaginationKey } from './sidebar-history';
 import { toast } from './toast';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useChatVisibility } from '@/hooks/use-chat-visibility';
 import { ChatSDKError } from '@chat-template/core/errors';
 import { useDataStream } from './data-stream-provider';
@@ -35,6 +35,12 @@ type AgentFocus = {
   taskKind?: string;
   recommendedFiles?: string[];
   recipe?: string[];
+};
+
+type CompactChatResponse = {
+  chatId?: string;
+  title?: string;
+  messageCount?: number;
 };
 
 export function Chat({
@@ -63,6 +69,7 @@ export function Chat({
   });
 
   const { mutate } = useSWRConfig();
+  const navigate = useNavigate();
   const { setDataStream } = useDataStream();
   const { chatHistoryEnabled } = useAppConfig();
   const [selectedChatModel, setSelectedChatModel] = useLocalStorage(
@@ -78,6 +85,7 @@ export function Chat({
   const memoryStatusRef = useRef<string | undefined>(memoryStatus);
   memoryStatusRef.current = memoryStatus;
   const [agentFocus, setAgentFocus] = useState<AgentFocus | undefined>();
+  const [isCompacting, setIsCompacting] = useState(false);
 
   const [lastPart, setLastPart] = useState<UIMessageChunk | undefined>();
   const lastPartRef = useRef<UIMessageChunk | undefined>(lastPart);
@@ -335,6 +343,63 @@ export function Chat({
     return _usage;
   }, [_usage, messages]);
 
+  const canCompactChat =
+    chatHistoryEnabled &&
+    !isReadonly &&
+    status === 'ready' &&
+    messages.length > 1;
+
+  const handleCompactChat = useCallback(async () => {
+    if (!canCompactChat || isCompacting) {
+      return;
+    }
+
+    setIsCompacting(true);
+    try {
+      const response = await fetchWithErrorHandlers(`/api/chat/${id}/compact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          selectedChatModel,
+          selectedVisibilityType: visibilityType,
+        }),
+      });
+      const payload = (await response.json()) as CompactChatResponse;
+
+      if (!payload.chatId) {
+        throw new Error('Compaction completed without a new chat id.');
+      }
+
+      fetchChatHistory();
+      toast({
+        type: 'success',
+        description: `Compacted ${payload.messageCount ?? messages.length} messages into a fresh chat.`,
+      });
+      navigate(`/chat/${payload.chatId}`);
+    } catch (error) {
+      toast({
+        type: 'error',
+        description:
+          error instanceof ChatSDKError && error.cause
+            ? error.cause
+            : error instanceof Error
+              ? error.message
+              : 'Failed to compact this chat.',
+      });
+    } finally {
+      setIsCompacting(false);
+    }
+  }, [
+    canCompactChat,
+    fetchChatHistory,
+    id,
+    isCompacting,
+    messages.length,
+    navigate,
+    selectedChatModel,
+    visibilityType,
+  ]);
+
   const inputElement = <MultimodalInput
     chatId={id}
     input={input}
@@ -380,6 +445,9 @@ export function Chat({
             onSelectModel={setSelectedChatModel}
             totalTokenUsage={totalTokenUsage}
             latestTokenUsage={latestAssistantUsage}
+            canCompact={canCompactChat}
+            isCompacting={isCompacting}
+            onCompact={handleCompactChat}
           />
 
           {memoryStatus && (

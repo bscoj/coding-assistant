@@ -21,6 +21,7 @@ from agent_server.sql_memory_store import (
     extract_metric_candidates,
     extract_tables,
 )
+from agent_server.sql_search import keyword_fanout_search
 
 SQL_CODE_BLOCK_PATTERN = re.compile(
     r"```(?P<lang>[A-Za-z0-9_+-]*)\n(?P<code>.*?)(?:```|$)",
@@ -102,11 +103,20 @@ def _extract_sql_candidates(text: str) -> list[str]:
     return []
 
 
-def _search_response(query: str, results: list[dict]) -> str:
+def _search_response(
+    query: str,
+    results: list[dict],
+    search_terms: list[str] | None = None,
+) -> str:
     payload = {
         "query": query,
+        "search_terms": search_terms or [query],
         "results": results,
-        "guidance": "Search results are summaries only. Use get_validated_sql_pattern(id) only for the best 1-2 candidates when you need the full SQL text.",
+        "guidance": (
+            "Search is keyword fan-out: each term is searched separately, then ranked and merged. "
+            "Results are summaries only. Use get_validated_sql_pattern(id) only for the best 1-2 "
+            "candidates when you need the full SQL text."
+        ),
     }
     return json.dumps(payload, indent=2, ensure_ascii=True)
 
@@ -265,33 +275,51 @@ def validated_sql_store_overview(limit: int = 10) -> str:
 
 @tool
 def search_validated_sql_patterns(query: str, limit: int = 4) -> str:
-    """Search validated SQL patterns for the active SQL scope by business term, table, join, filter, or metric keyword. Returns lightweight summaries, not full SQL text."""
+    """Search validated SQL patterns by focused business terms, tables, joins, filters, or metric keywords. Multi-word input is split into separate keyword searches and returns lightweight summaries, not full SQL text."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty query."
+    store = get_active_sql_store()
+    workspace = str(workspace_root())
+    payload = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, bounded_limit: store.search_patterns(
+            workspace,
+            term,
+            limit=bounded_limit,
+        ),
+        limit=max(1, min(limit, 10)),
+        max_terms=8,
+    )
     return _search_response(
         needle,
-        get_active_sql_store().search_patterns(
-            str(workspace_root()),
-            needle,
-            limit=max(1, min(limit, 10)),
-        ),
+        payload["results"],
+        payload["search_terms"],
     )
 
 
 @tool
 def search_validated_sql_by_table_or_join(query: str, limit: int = 4) -> str:
-    """Find validated SQL patterns by table name, alias, or join clue inside the active SQL scope so you can quickly reuse known-good data combinations. Returns lightweight summaries, not full SQL text."""
+    """Find validated SQL patterns by focused table, alias, key, or join keywords so you can quickly reuse known-good data combinations. Multi-word input is split into separate keyword searches and returns lightweight summaries, not full SQL text."""
     needle = query.strip()
     if not needle:
         return "Provide a non-empty table or join query."
+    store = get_active_sql_store()
+    workspace = str(workspace_root())
+    payload = keyword_fanout_search(
+        query=needle,
+        search_fn=lambda term, bounded_limit: store.search_by_table_or_join(
+            workspace,
+            term,
+            limit=bounded_limit,
+        ),
+        limit=max(1, min(limit, 10)),
+        max_terms=8,
+    )
     return _search_response(
         needle,
-        get_active_sql_store().search_by_table_or_join(
-            str(workspace_root()),
-            needle,
-            limit=max(1, min(limit, 10)),
-        ),
+        payload["results"],
+        payload["search_terms"],
     )
 
 

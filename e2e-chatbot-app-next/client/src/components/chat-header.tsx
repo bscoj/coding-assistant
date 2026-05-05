@@ -3,7 +3,14 @@ import { lazy, Suspense, useState } from 'react';
 
 import { SidebarToggle } from '@/components/sidebar-toggle';
 import { Button } from '@/components/ui/button';
-import { Cpu, MessageSquareOff, SlidersHorizontal, TriangleAlert } from 'lucide-react';
+import {
+  Cpu,
+  Loader2,
+  MessageSquareOff,
+  Minimize2,
+  SlidersHorizontal,
+  TriangleAlert,
+} from 'lucide-react';
 import { useConfig } from '@/hooks/use-config';
 import {
   Tooltip,
@@ -66,6 +73,9 @@ export function ChatHeader({
   onSelectModel,
   totalTokenUsage,
   latestTokenUsage,
+  canCompact,
+  isCompacting,
+  onCompact,
 }: {
   title?: string,
   empty?: boolean,
@@ -74,6 +84,9 @@ export function ChatHeader({
   onSelectModel?: (model: string) => void,
   totalTokenUsage?: LanguageModelUsage,
   latestTokenUsage?: LanguageModelUsage,
+  canCompact?: boolean,
+  isCompacting?: boolean,
+  onCompact?: () => void,
 }) {
   const navigate = useNavigate();
   const {
@@ -114,6 +127,33 @@ export function ChatHeader({
 
         <div className="ml-auto flex items-center gap-2">
           <TokenUsagePill usage={totalTokenUsage} />
+          {canCompact && onCompact ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="h-8 rounded-full border-white/[0.08] bg-white/[0.04] px-2.5 text-xs text-white/80 hover:bg-white/[0.08] hover:text-white disabled:opacity-60"
+                    onClick={onCompact}
+                    disabled={isCompacting}
+                    aria-label="Compact chat and start fresh"
+                  >
+                    {isCompacting ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Minimize2 className="h-3.5 w-3.5" />
+                    )}
+                    <span className="ml-1.5 hidden lg:inline">
+                      {isCompacting ? 'Compacting' : 'Compact'}
+                    </span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Summarize this chat and start a fresh session.</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : null}
           <Button
             variant="outline"
             className="h-8 max-w-[220px] rounded-full border-white/[0.08] bg-white/[0.04] px-3 text-xs text-white/80 hover:bg-white/[0.08] hover:text-white"

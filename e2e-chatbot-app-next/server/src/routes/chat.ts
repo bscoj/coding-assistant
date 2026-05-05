@@ -45,6 +45,8 @@ import {
   updateChatVisiblityById,
   isDatabaseAvailable,
   updateChatTitleById,
+  type Chat,
+  type DBMessage,
 } from '@chat-template/db';
 import {
   type ChatMessage,
@@ -206,6 +208,291 @@ function hasTokenUsage(usage: LanguageModelUsage | undefined): boolean {
     (usage.outputTokens ?? 0) > 0 ||
     (usage.totalTokens ?? 0) > 0
   );
+}
+
+function isVisibilityType(value: unknown): value is VisibilityType {
+  return value === 'private' || value === 'public';
+}
+
+function parseClientMessages(value: unknown): ChatMessage[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return normalizeLegacyApprovalParts(
+    value.filter((message): message is ChatMessage => {
+      return (
+        typeof message === 'object' &&
+        message !== null &&
+        typeof (message as { id?: unknown }).id === 'string' &&
+        typeof (message as { role?: unknown }).role === 'string' &&
+        Array.isArray((message as { parts?: unknown }).parts)
+      );
+    }),
+  );
+}
+
+function stringifyForCompaction(value: unknown, maxLength = 4000): string {
+  if (typeof value === 'string') {
+    return truncatePreserveWords(value.replace(/\s+/g, ' ').trim(), maxLength);
+  }
+
+  try {
+    const json = JSON.stringify(value, null, 2);
+    return truncatePreserveWords(json, maxLength);
+  } catch {
+    return truncatePreserveWords(String(value), maxLength);
+  }
+}
+
+function formatPartForCompaction(part: unknown): string {
+  if (typeof part !== 'object' || part === null) {
+    return '';
+  }
+
+  const typed = part as {
+    type?: unknown;
+    text?: unknown;
+    data?: unknown;
+    state?: unknown;
+    toolName?: unknown;
+    input?: unknown;
+    output?: unknown;
+    result?: unknown;
+    errorText?: unknown;
+  };
+  const type = typeof typed.type === 'string' ? typed.type : 'part';
+
+  if (type === 'text' && typeof typed.text === 'string') {
+    return typed.text.trim();
+  }
+
+  if (type.startsWith('source-') || type === 'step-start') {
+    return '';
+  }
+
+  if (type.startsWith('data-')) {
+    const value = stringifyForCompaction(typed.data, 1600);
+    return value ? `[${type}] ${value}` : '';
+  }
+
+  if (type.includes('tool') || typeof typed.toolName === 'string') {
+    const segments = [
+      `Tool${typeof typed.toolName === 'string' ? ` ${typed.toolName}` : ''}`,
+      typeof typed.state === 'string' ? `state=${typed.state}` : undefined,
+      typed.input !== undefined
+        ? `input=${stringifyForCompaction(typed.input, 1600)}`
+        : undefined,
+      typed.output !== undefined
+        ? `output=${stringifyForCompaction(typed.output, 2400)}`
+        : undefined,
+      typed.result !== undefined
+        ? `result=${stringifyForCompaction(typed.result, 2400)}`
+        : undefined,
+      typed.errorText !== undefined
+        ? `error=${stringifyForCompaction(typed.errorText, 1200)}`
+        : undefined,
+    ].filter(Boolean);
+
+    return segments.join('\n');
+  }
+
+  return `[${type}] ${stringifyForCompaction(part, 1200)}`;
+}
+
+function truncateMiddlePreserveEnds(input: string, maxLength: number): string {
+  if (input.length <= maxLength) {
+    return input;
+  }
+
+  const headLength = Math.floor(maxLength * 0.35);
+  const tailLength = maxLength - headLength;
+  const omitted = input.length - headLength - tailLength;
+
+  return `${input.slice(0, headLength)}\n\n[... omitted ${omitted.toLocaleString()} characters from the middle of the chat transcript ...]\n\n${input.slice(-tailLength)}`;
+}
+
+function messagesToCompactionTranscript(messages: ChatMessage[]) {
+  const blocks = messages.map((message, index) => {
+    const createdAt = message.metadata?.createdAt
+      ? ` at ${message.metadata.createdAt}`
+      : '';
+    const content = message.parts
+      .map(formatPartForCompaction)
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+
+    return `### ${index + 1}. ${message.role}${createdAt}\n${content || '[non-text or empty message]'}`;
+  });
+
+  return truncateMiddlePreserveEnds(blocks.join('\n\n'), 90000);
+}
+
+function extractFileHints(text: string) {
+  const matches = text.match(
+    /(?:^|\s)([\w./-]+\.(?:ts|tsx|js|jsx|py|md|yml|yaml|json|sql|css|scss|html))/g,
+  );
+  if (!matches) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(matches.map(match => match.trim()).filter(Boolean)),
+  ).slice(0, 24);
+}
+
+function extractCodeBlocks(text: string) {
+  const blocks = Array.from(text.matchAll(/```[\s\S]*?```/g))
+    .map(match => match[0])
+    .filter(Boolean);
+
+  return blocks.slice(-4).map(block => truncatePreserveWords(block, 2400));
+}
+
+function fallbackCompactionSummary({
+  messages,
+  transcript,
+  title,
+}: {
+  messages: ChatMessage[];
+  transcript: string;
+  title: string;
+}) {
+  const firstUser = messages.find(message => message.role === 'user');
+  const recentMessages = messages.slice(-8);
+  const fileHints = extractFileHints(transcript);
+  const codeBlocks = extractCodeBlocks(transcript);
+  const objective = firstUser
+    ? firstUser.parts
+        .map(formatPartForCompaction)
+        .filter(Boolean)
+        .join('\n\n')
+        .trim()
+    : '';
+
+  return [
+    '# Compacted Handoff',
+    '',
+    '## Main Objective',
+    objective
+      ? truncatePreserveWords(objective, 1800)
+      : `Continue the work from "${title}".`,
+    '',
+    '## Current State',
+    `This handoff was generated from ${messages.length} messages. The model summary call was unavailable, so this fallback preserves the main objective, recent transcript, file hints, and recent code blocks.`,
+    '',
+    '## Important Files',
+    fileHints.length > 0 ? fileHints.map(file => `- ${file}`).join('\n') : '- No file paths were detected.',
+    '',
+    '## Recent Conversation',
+    recentMessages
+      .map((message, index) => {
+        const text = message.parts
+          .map(formatPartForCompaction)
+          .filter(Boolean)
+          .join('\n\n');
+        return `### ${index + 1}. ${message.role}\n${truncatePreserveWords(text || '[empty]', 2200)}`;
+      })
+      .join('\n\n'),
+    '',
+    '## Recent Code',
+    codeBlocks.length > 0 ? codeBlocks.join('\n\n') : 'No code blocks were detected.',
+    '',
+    '## Next Step',
+    'Use this handoff as the context for the fresh session and continue from the most recent user request.',
+  ].join('\n');
+}
+
+function normalizeCompactionSummary(summary: string, fallback: string) {
+  const cleaned = summary
+    .replace(/^[`"'\s]+|[`"'\s]+$/g, '')
+    .trim();
+
+  if (!cleaned) {
+    return fallback;
+  }
+
+  return cleaned.startsWith('#')
+    ? cleaned
+    : `# Compacted Handoff\n\n${cleaned}`;
+}
+
+async function generateCompactionSummary({
+  messages,
+  title,
+  modelId,
+}: {
+  messages: ChatMessage[];
+  title: string;
+  modelId: string;
+}) {
+  const transcript = messagesToCompactionTranscript(messages);
+  const fallback = fallbackCompactionSummary({ messages, transcript, title });
+
+  try {
+    const model = await myProvider.languageModel(modelId || 'title-model');
+    const failFastForLocalApiProxy = shouldFailFastForLocalApiProxy();
+    const { text } = await generateText({
+      model,
+      ...(failFastForLocalApiProxy ? { maxRetries: 0 } : {}),
+      maxOutputTokens: 2400,
+      system: `You compress long coding-agent conversations into precise handoff summaries for a fresh session.
+
+Return Markdown only with these sections:
+# Compacted Handoff
+## Main Objective
+## Current State
+## Important Decisions
+## Files And Code
+## Errors And Gotchas
+## Data, SQL, Or Databricks Context
+## Open Questions
+## Next Steps
+
+Rules:
+- Preserve exact file paths, function names, commands, schema/table names, endpoint names, settings, and branch names.
+- Preserve important code snippets only when they are needed to continue safely.
+- Prefer concrete state over narrative.
+- Remove small talk, repetition, and stale exploration.
+- Keep the result concise enough to seed a new chat, but do not lose production-relevant implementation details.`,
+      prompt: [
+        `Chat title: ${title}`,
+        `Message count: ${messages.length}`,
+        '',
+        'Transcript:',
+        transcript,
+      ].join('\n'),
+    });
+
+    return normalizeCompactionSummary(text, fallback);
+  } catch (error) {
+    console.warn('[Compact Chat] Model summary failed; using fallback', error);
+    return fallback;
+  }
+}
+
+function compactedChatTitle(title: string) {
+  const cleaned = title.replace(/^Compacted:\s*/i, '').trim() || 'Chat';
+  return truncatePreserveWords(`Compacted: ${cleaned}`, 64);
+}
+
+function buildCompactionSeedMessage({
+  oldChatId,
+  title,
+  summary,
+}: {
+  oldChatId: string;
+  title: string;
+  summary: string;
+}) {
+  return [
+    `Compacted conversation handoff from "${title}" (${oldChatId}).`,
+    '',
+    'Use this as the starting context for this fresh session. Do not ask me to repeat prior details unless something is ambiguous.',
+    '',
+    summary,
+  ].join('\n');
 }
 
 /**
@@ -792,6 +1079,170 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     }
 
     const chatError = new ChatSDKError('offline:chat');
+    const response = chatError.toResponse();
+    return res.status(response.status).json(response.json);
+  }
+});
+
+/**
+ * POST /api/chat/:id/compact - Summarize a long chat into a fresh session.
+ */
+chatRouter.post('/:id/compact', requireAuth, async (req: Request, res: Response) => {
+  const session = req.session;
+  if (!session) {
+    const error = new ChatSDKError('unauthorized:chat');
+    const response = error.toResponse();
+    return res.status(response.status).json(response.json);
+  }
+
+  const dbAvailable = isDatabaseAvailable();
+  const useLocalHistory = shouldUseLocalHistory(dbAvailable);
+
+  if (!dbAvailable && !useLocalHistory) {
+    const error = new ChatSDKError(
+      'bad_request:api',
+      'Compaction requires database or local chat history to be enabled.',
+    );
+    const response = error.toResponse();
+    return res.status(response.status).json(response.json);
+  }
+
+  try {
+    const oldChatId = getIdFromRequest(req);
+    if (!oldChatId) {
+      const error = new ChatSDKError('bad_request:api');
+      const response = error.toResponse();
+      return res.status(response.status).json(response.json);
+    }
+
+    const { chat, allowed, reason } = useLocalHistory
+      ? await checkLocalChatAccess(oldChatId, session.user.id)
+      : await checkChatAccess(oldChatId, session.user.id);
+
+    const clientMessages = parseClientMessages(req.body?.previousMessages);
+
+    if (reason !== 'not_found' && !allowed) {
+      const error = new ChatSDKError('forbidden:chat');
+      const response = error.toResponse();
+      return res.status(response.status).json(response.json);
+    }
+
+    if (!chat && clientMessages.length === 0) {
+      const error = new ChatSDKError('not_found:chat');
+      const response = error.toResponse();
+      return res.status(response.status).json(response.json);
+    }
+
+    if (chat && chat.userId !== session.user.id) {
+      const error = new ChatSDKError('forbidden:chat');
+      const response = error.toResponse();
+      return res.status(response.status).json(response.json);
+    }
+
+    const storedMessages = dbAvailable
+      ? convertToUIMessages(await getMessagesByChatId({ id: oldChatId }))
+      : useLocalHistory
+        ? convertToUIMessages(await getLocalMessagesByChatId(oldChatId))
+        : [];
+    const sourceMessages = normalizeLegacyApprovalParts(
+      clientMessages.length > storedMessages.length
+        ? clientMessages
+        : storedMessages,
+    );
+
+    if (sourceMessages.length === 0) {
+      const error = new ChatSDKError(
+        'bad_request:api',
+        'There are no messages to compact.',
+      );
+      const response = error.toResponse();
+      return res.status(response.status).json(response.json);
+    }
+
+    const sourceTitle = chat?.title ?? 'Unsaved chat';
+    const modelId =
+      typeof req.body?.selectedChatModel === 'string' &&
+      req.body.selectedChatModel.trim()
+        ? req.body.selectedChatModel.trim()
+        : 'title-model';
+    const summary = await generateCompactionSummary({
+      messages: sourceMessages,
+      title: sourceTitle,
+      modelId,
+    });
+
+    const newChatId = generateUUID();
+    const title = compactedChatTitle(sourceTitle);
+    const visibility: VisibilityType = isVisibilityType(req.body?.selectedVisibilityType)
+      ? req.body.selectedVisibilityType
+      : isVisibilityType(chat?.visibility)
+        ? chat.visibility
+        : 'private';
+    const now = new Date();
+    const chatRecord: Chat = {
+      id: newChatId,
+      userId: session.user.id,
+      title,
+      visibility,
+      createdAt: now,
+      lastContext: null,
+    };
+    const seedText = buildCompactionSeedMessage({
+      oldChatId,
+      title: sourceTitle,
+      summary,
+    });
+    const seededMessages: DBMessage[] = [
+      {
+        chatId: newChatId,
+        id: generateUUID(),
+        role: 'user',
+        parts: [{ type: 'text' as const, text: seedText }],
+        attachments: [],
+        createdAt: now,
+        traceId: null,
+      },
+      {
+        chatId: newChatId,
+        id: generateUUID(),
+        role: 'assistant',
+        parts: [
+          {
+            type: 'text' as const,
+            text: 'Ready to continue from this compacted handoff.',
+          },
+        ],
+        attachments: [],
+        createdAt: new Date(now.getTime() + 1),
+        traceId: null,
+      },
+    ];
+
+    if (dbAvailable) {
+      await saveChat(chatRecord);
+      await saveMessages({ messages: seededMessages });
+    } else {
+      await saveLocalChat(chatRecord);
+      await saveLocalMessages(seededMessages);
+    }
+
+    return res.status(200).json({
+      chatId: newChatId,
+      title,
+      messageCount: sourceMessages.length,
+      summary,
+    });
+  } catch (error) {
+    console.error('[Compact Chat] Failed to compact chat:', error);
+    if (error instanceof ChatSDKError) {
+      const response = error.toResponse();
+      return res.status(response.status).json(response.json);
+    }
+
+    const chatError = new ChatSDKError(
+      'offline:chat',
+      error instanceof Error ? error.message : String(error),
+    );
     const response = chatError.toResponse();
     return res.status(response.status).json(response.json);
   }
